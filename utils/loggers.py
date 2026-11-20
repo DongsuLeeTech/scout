@@ -11,7 +11,6 @@ import json
 
 
 class CsvLogger:
-    """CSV logger for logging metrics to a CSV file."""
 
     def __init__(self, path):
         self.path = path
@@ -39,7 +38,6 @@ class CsvLogger:
 
 
 def get_exp_name(seed):
-    """Return the experiment name."""
     exp_name = ''
     exp_name += f'sd{seed:03d}_'
     if 'SLURM_JOB_ID' in os.environ:
@@ -52,18 +50,14 @@ def get_exp_name(seed):
 
 
 def get_flag_dict():
-    """Return the dictionary of flags with JSON-safe values."""
 
     def _make_json_safe(obj):
-        # Handle ConfigDict first
         if isinstance(obj, ml_collections.ConfigDict):
             obj = obj.to_dict()
-        # Recurse for dict / list / tuple
         if isinstance(obj, dict):
             return {k: _make_json_safe(v) for k, v in obj.items()}
         if isinstance(obj, (list, tuple)):
             return [_make_json_safe(v) for v in obj]
-        # Base case: if JSON serializable, keep; else stringify
         try:
             json.dumps(obj)
             return obj
@@ -81,7 +75,6 @@ def setup_wandb(
     name=None,
     mode='online',
 ):
-    """Set up Weights & Biases for logging."""
     wandb_output_dir = tempfile.mkdtemp()
     tags = [group] if group is not None else None
 
@@ -107,14 +100,12 @@ def setup_wandb(
 
 
 def reshape_video(v, n_cols=None):
-    """Helper function to reshape videos."""
     if v.ndim == 4:
         v = v[None,]
 
     _, t, h, w, c = v.shape
 
     if n_cols is None:
-        # Set n_cols to the square root of the number of videos.
         n_cols = np.ceil(np.sqrt(v.shape[0])).astype(int)
     if v.shape[0] % n_cols != 0:
         len_addition = n_cols - v.shape[0] % n_cols
@@ -129,20 +120,10 @@ def reshape_video(v, n_cols=None):
 
 
 def get_wandb_video(renders=None, n_cols=None, fps=15):
-    """Return a Weights & Biases video.
-
-    It takes a list of videos and reshapes them into a single video with the specified number of columns.
-
-    Args:
-        renders: List of videos. Each video should be a numpy array of shape (t, h, w, c).
-        n_cols: Number of columns for the reshaped video. If None, it is set to the square root of the number of videos.
-    """
-    # Pad videos to the same length.
     max_length = max([len(render) for render in renders])
     for i, render in enumerate(renders):
         assert render.dtype == np.uint8
 
-        # Decrease brightness of the padded frames.
         final_frame = render[-1]
         final_image = Image.fromarray(final_frame)
         enhancer = ImageEnhance.Brightness(final_image)
@@ -152,10 +133,9 @@ def get_wandb_video(renders=None, n_cols=None, fps=15):
         pad = np.repeat(final_frame[np.newaxis, ...], max_length - len(render), axis=0)
         renders[i] = np.concatenate([render, pad], axis=0)
 
-        # Add borders.
         renders[i] = np.pad(renders[i], ((0, 0), (1, 1), (1, 1), (0, 0)), mode='constant', constant_values=0)
-    renders = np.array(renders)  # (n, t, h, w, c)
+    renders = np.array(renders)
 
-    renders = reshape_video(renders, n_cols)  # (t, c, nr * h, nc * w)
+    renders = reshape_video(renders, n_cols)
 
     return wandb.Video(renders, fps=fps, format='mp4')

@@ -10,12 +10,9 @@ from .base import BaseEnvironment, ResetReturn, StepReturn
 
 
 class MPEOMAR(BaseEnvironment):
-    """Note: currently only supports simple spread."""
 
     def __init__(self, scenario, seed=None):
-        # load scenario from script
-        scenario = Scenario()  # TODO: make variable
-        # create world
+        scenario = Scenario()
         world = scenario.make_world()
 
         env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
@@ -63,7 +60,6 @@ class MPEOMAR(BaseEnvironment):
         return observations, rewards, terminals, trunctations, info  # type: ignore
 
     def __getattr__(self, name: str) -> Any:
-        """Expose any other attributes of the underlying environment."""
         if hasattr(self.__class__, name):
             return self.__getattribute__(name)
         else:

@@ -40,8 +40,6 @@ def get_mamujoco_args(scenario: str) -> Dict[str, Any]:
 
 class MAMuJoCoOMIGA(BaseEnvironment):
 
-    """Environment wrapper Multi-Agent MuJoCo."""
-
     def __init__(self, scenario: str, seed: Optional[int] = 42):
         env_args = get_mamujoco_args(scenario)
         self._environment = MujocoMulti(env_args=env_args, seed=seed)
@@ -99,7 +97,6 @@ class MAMuJoCoOMIGA(BaseEnvironment):
 
 
     def __getattr__(self, name: str) -> Any:
-        """Expose any other attributes of the underlying environment."""
         if hasattr(self.__class__, name):
             return self.__getattribute__(name)
         else:

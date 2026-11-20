@@ -10,7 +10,6 @@ def get_mamujoco_args(scenario: str) -> Dict[str, Any]:
     env_args = {
         "agent_obsk": 1,
         "episode_limit": 1000,
-        # "global_categories": "qvel,qpos",
     }
     if scenario.lower() == "4ant":
         env_args["scenario"] = "Ant-v2"
@@ -28,16 +27,14 @@ def get_mamujoco_args(scenario: str) -> Dict[str, Any]:
 
 class MAMuJoCo(BaseEnvironment):
 
-    """Environment wrapper Multi-Agent MuJoCo."""
-
     def __init__(self, scenario: str, seed: Optional[int] = 42):
         env_args = get_mamujoco_args(scenario)
         self._environment = MujocoMulti(env_args=env_args, seed=seed)
 
         self.agents = [f"agent_{n}" for n in range(self._environment.n_agents)]
         self.num_actions = self._environment.n_actions
-        self.observation_shape = None # TODO: pytorch systems need this.
-        self.state_shape = None # TODO: pytorch systems need this.
+        self.observation_shape = None
+        self.state_shape = None
 
     def reset(self) -> ResetReturn:
         self._environment.reset()
@@ -75,7 +72,6 @@ class MAMuJoCo(BaseEnvironment):
         return observations, rewards, terminals, truncations, info  # type: ignore
 
     def __getattr__(self, name: str) -> Any:
-        """Expose any other attributes of the underlying environment."""
         if hasattr(self.__class__, name):
             return self.__getattribute__(name)
         else:

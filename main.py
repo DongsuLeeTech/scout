@@ -1,10 +1,3 @@
-"""Unified entry point for offline (and optional offline-to-online) MARL training.
-
-Supports both discrete (SMAC) and continuous (MAMuJoCo) environments with
-automatic action-type detection.
-
-Agents: macflow, scout, scout_team, bc
-"""
 import os
 import sys
 import json
@@ -33,36 +26,20 @@ from utils.loggers import (
     get_wandb_video,
 )
 
-# ========================== Agent Registry ========================== #
 AGENT_MAP = {
-    'macflow':    ('agents.macflow',     'MACFlowAgent'),
-    'scout':      ('agents.scout',       'ScoutAgent'),
-    'scout_v1':   ('agents.scout',       'ScoutAgent'),
-    'scout_v2':   ('agents.scout',       'ScoutAgent'),
-    'scout_eff':      ('agents.scout_efficiency', 'ScoutEfficientAgent'),
-    'scout_eff_v1':   ('agents.scout_efficiency', 'ScoutEfficientAgent'),
-    'scout_eff_v2':   ('agents.scout_efficiency', 'ScoutEfficientAgent'),
-    'scout_team': ('agents.scout_team',  'ScoutTeamAgent'),
-    'bc':         ('agents.bc',          'MABCAgent'),
-    'odis':       ('agents.odis',        'ODISAgent'),
+    'scout':     ('agents.scout',            'ScoutAgent'),
+    'scout_eff': ('agents.scout_efficiency', 'ScoutEfficientAgent'),
+    'macflow':   ('agents.macflow',          'MACFlowAgent'),
+    'bc':        ('agents.bc',               'MABCAgent'),
 }
 
 AGENT_CONFIG_MAP = {
-    'macflow':    'agents/macflow.py',
-    'scout':      'agents/scout.py',
-    'scout_v1':   'agents/scout.py:v1',
-    'scout_v2':   'agents/scout.py:v2',
-    'scout_eff':      'agents/scout_efficiency.py',
-    'scout_eff_v1':   'agents/scout_efficiency.py:v1',
-    'scout_eff_v2':   'agents/scout_efficiency.py:v2',
-    'scout_team': 'agents/scout_team.py',
-    'bc':         'agents/bc.py',
-    'odis':       'agents/odis.py',
+    'scout':     'agents/scout.py',
+    'scout_eff': 'agents/scout_efficiency.py',
+    'macflow':   'agents/macflow.py',
+    'bc':        'agents/bc.py',
 }
 
-# ========================== Flags ========================== #
-# Pre-parse agent_name from sys.argv so we can define the correct config flag
-# BEFORE app.run() parses all flags (required for --agent.XXX overrides to work).
 _agent_name = 'macflow'
 for _i, _arg in enumerate(sys.argv):
     if _arg.startswith('--agent_name='):
@@ -95,18 +72,18 @@ flags.DEFINE_integer('save_interval',  1_000_001,  'Save checkpoint every N step
 flags.DEFINE_integer('num_eval_episodes', 10,      'Number of evaluation episodes')
 flags.DEFINE_integer('num_eval_workers', 10,       'Parallel eval workers (threads)')
 
-# Define agent config flag BEFORE app.run() so --agent.XXX overrides are recognized
+flags.DEFINE_string('restore_path',    '',          'Glob for the run dir holding params_<epoch>.pkl (empty = train offline)')
+flags.DEFINE_integer('restore_epoch',  0,           'Checkpoint step to restore, e.g. 500000')
+
 _config_path = AGENT_CONFIG_MAP.get(_agent_name, 'agents/macflow.py')
 config_flags.DEFINE_config_file('agent', _config_path, lock_config=False)
 
 
-# ========================== Main ========================== #
 def main(_):
     agent_name = FLAGS.agent_name
     if agent_name not in AGENT_MAP:
         raise ValueError(f"Unknown agent '{agent_name}'. Choose from {list(AGENT_MAP.keys())}")
 
-    # Import agent class
     module_path, class_name = AGENT_MAP[agent_name]
     import importlib
     agent_module = importlib.import_module(module_path)
@@ -127,7 +104,6 @@ def main(_):
     os.makedirs(save_root, exist_ok=True)
     json.dump(get_flag_dict(), open(os.path.join(save_root, 'flags.json'), 'w'))
 
-    # -------- Environment & Buffer --------
     env_factory = lambda s: get_environment(FLAGS.source, FLAGS.env, FLAGS.scenario, s)
     env = env_factory(FLAGS.seed)
     agent_names = list(env.agents)
@@ -140,42 +116,33 @@ def main(_):
         max_size=FLAGS.buffer_size,
     )
 
-    if FLAGS.data_dir in ('/datastor1/dongsu', '/datastor1/dongsu/'):
+    if FLAGS.data_dir in ('', './data/', './data'):
         download_and_unzip_vault(FLAGS.source, FLAGS.env, FLAGS.scenario,
                                  dataset_base_dir=FLAGS.data_dir)
         buffer.populate_from_vault(FLAGS.source, FLAGS.env, FLAGS.scenario,
                                    str(FLAGS.dataset), rel_dir=FLAGS.data_dir)
     else:
-        download_and_unzip_vault(FLAGS.source, FLAGS.env, FLAGS.scenario)
         buffer.populate_from_vault(FLAGS.source, FLAGS.env, FLAGS.scenario,
-                                   str(FLAGS.dataset))
+                                   str(FLAGS.dataset), rel_dir=FLAGS.data_dir)
 
     example = buffer.sample()
     ex_obs = jnp.asarray(example['observations'])
     ex_act = jnp.asarray(example['actions'])
 
-    # -------- Auto-detect discrete vs continuous --------
-    # Discrete actions have shape (B, T, N) with integer type -> legals gives action_dim
-    # Continuous actions have shape (B, T, N, A) with float type
     is_discrete = (len(ex_act.shape) == 3)
 
     if is_discrete:
-        # For discrete envs, use legals shape for action_dim
         ex_act = jnp.asarray(example['infos']['legals'])
 
-    # Set is_discrete in config
     cfg['is_discrete'] = is_discrete
     if is_discrete:
         cfg['agent_name'] = agent_name
 
-    # Pass total_steps for LR schedule
     cfg['total_steps'] = FLAGS.offline_steps + FLAGS.online_steps
 
-    # Pass scenario to agent config (needed by ODIS decomposer)
-    if agent_name == 'odis':
-        cfg['scenario'] = FLAGS.scenario
+    if 'state' in example.get('infos', {}) and 'state_dim' in cfg:
+        cfg['state_dim'] = int(example['infos']['state'].shape[-1])
 
-    # -------- Create Agent --------
     agent = agent_cls.create(
         seed=FLAGS.seed,
         ex_observations=ex_obs,
@@ -184,15 +151,12 @@ def main(_):
         config=cfg,
     )
 
-    # -------- Determine VGF eval steps --------
-    # Any agent starting with 'scout' gets multi-step VGF evaluation
     has_vgf = agent_name.startswith('scout')
     if has_vgf:
         eval_vgf_steps_list = [0, 1, 3, 5, 10]
     else:
         eval_vgf_steps_list = [None]
 
-    # -------- Pre-create eval environment pool --------
     n_eval_eps = FLAGS.num_eval_episodes
     eval_env_pool = []
     for i in range(n_eval_eps):
@@ -202,52 +166,143 @@ def main(_):
             eval_env_pool = []
             break
 
-    # -------- Logger --------
     train_csv = CsvLogger(os.path.join(save_root, 'train.csv'))
     eval_csv = CsvLogger(os.path.join(save_root, 'eval.csv'))
     t0 = time.time()
     last = t0
 
-    # -------- Offline Training --------
-    for step in tqdm.tqdm(range(1, FLAGS.offline_steps + 1), dynamic_ncols=True, desc='Offline'):
-        batch = buffer.sample()
-        agent, info = agent.update(batch, step)
+    def run_eval(agent, step):
+        eval_metrics = {}
+        for eval_idx, eval_steps in enumerate(eval_vgf_steps_list):
+            eval_metrics.update(_evaluate(
+                agent, env_factory, is_discrete,
+                n_eps=n_eval_eps,
+                seed=FLAGS.seed + eval_idx,
+                eval_vgf_steps=eval_steps,
+                num_workers=FLAGS.num_eval_workers,
+                env_pool=eval_env_pool if eval_env_pool else None,
+            ))
+        wandb.log(eval_metrics, step=step)
+        eval_csv.log(eval_metrics, step=step)
 
-        if step % FLAGS.log_interval == 0:
-            metrics = {f'train/{k}': float(v) for k, v in info.items()}
-            metrics['time/iter_s'] = (time.time() - last) / FLAGS.log_interval
-            wandb.log(metrics, step=step)
-            train_csv.log(metrics, step=step)
-            last = time.time()
+    if FLAGS.restore_path:
+        from utils.flax_utils import restore_agent
+        agent = restore_agent(agent, FLAGS.restore_path, FLAGS.restore_epoch)
+        run_eval(agent, FLAGS.restore_epoch)
+    else:
+        run_eval(agent, 0)
 
-        if step % FLAGS.eval_interval == 0:
-            eval_metrics = {}
-            for eval_idx, eval_steps in enumerate(eval_vgf_steps_list):
-                eval_ret = _evaluate(
-                    agent, env_factory, is_discrete,
-                    n_eps=n_eval_eps,
-                    seed=FLAGS.seed + eval_idx,
-                    eval_vgf_steps=eval_steps,
-                    num_workers=FLAGS.num_eval_workers,
-                    env_pool=eval_env_pool if eval_env_pool else None,
-                )
-                eval_metrics.update(eval_ret)
-            wandb.log(eval_metrics, step=step)
-            eval_csv.log(eval_metrics, step=step)
+        for step in tqdm.tqdm(range(1, FLAGS.offline_steps + 1), dynamic_ncols=True, desc='Offline'):
+            batch = buffer.sample()
+            agent, info = agent.update(batch, step)
 
-        if step % FLAGS.save_interval == 0:
-            agent.network.save(os.path.join(save_root, f'ckpt_{step}.npz'))
+            if step % FLAGS.log_interval == 0:
+                metrics = {f'train/{k}': float(v) for k, v in info.items()}
+                metrics['time/iter_s'] = (time.time() - last) / FLAGS.log_interval
+                wandb.log(metrics, step=step)
+                train_csv.log(metrics, step=step)
+                last = time.time()
 
-    # -------- Online Fine-tuning (optional) --------
+            if step % FLAGS.eval_interval == 0:
+                run_eval(agent, step)
+
+            if step % FLAGS.save_interval == 0:
+                from utils.flax_utils import save_agent
+                save_agent(agent, save_root, step)
+
     if FLAGS.online_steps > 0:
         online_env = env_factory(FLAGS.seed + 9999)
+
+        online_buffer = FlashbaxReplayBuffer(
+            sequence_length=FLAGS.sequence_length,
+            batch_size=FLAGS.batch_size,
+            sample_period=FLAGS.sample_period,
+            seed=FLAGS.seed + 5000,
+            max_size=FLAGS.buffer_size,
+        )
+        online_buffer.populate_from_vault(FLAGS.source, FLAGS.env, FLAGS.scenario,
+                                          str(FLAGS.dataset), rel_dir=FLAGS.data_dir)
+
+        observations, infos = online_env.reset()
+        carry = None
+        reset_mask = None
+        online_episode_return = 0.0
+        online_episode_count = 0
+        online_wins = 0
+
         for step in tqdm.tqdm(
             range(FLAGS.offline_steps + 1, FLAGS.offline_steps + FLAGS.online_steps + 1),
             dynamic_ncols=True, desc='Online',
         ):
-            # Collect data from environment and add to buffer
-            # (placeholder - actual online data collection varies by env)
-            batch = buffer.sample()
+            rng_key = jax.random.PRNGKey(FLAGS.seed + step)
+
+            if is_discrete:
+                if hasattr(agent, 'sample_actions_with_carry'):
+                    actions, carry = agent.sample_actions_with_carry(
+                        observations, carry, rng_key,
+                        legal_actions=infos.get('legals'),
+                        reset_mask=reset_mask,
+                        eval_vgf_steps=cfg.get('online_vgf_steps',
+                                               cfg.get('eval_vgf_steps', 0)),
+                    )
+                else:
+                    actions = agent.sample_actions(
+                        observations, rng_key,
+                        legal_actions=infos.get('legals'),
+                    )
+                actions_env = {
+                    name: int(actions[name].item())
+                    for name in agent.agent_names
+                }
+            else:
+                kwargs = {}
+                online_vgf = cfg.get('online_vgf_steps', cfg.get('eval_vgf_steps', 0))
+                if online_vgf is not None and online_vgf > 0:
+                    kwargs['eval_vgf_steps'] = online_vgf
+                actions = agent.sample_actions(observations, rng_key, **kwargs)
+                actions_env = {
+                    name: np.array(actions[name])
+                    for name in agent.agent_names
+                }
+
+            next_observations, rewards, terminals, truncations, infos = online_env.step(actions_env)
+
+            online_buffer.add(
+                observations=observations,
+                actions=actions_env,
+                rewards=rewards,
+                terminals=terminals,
+                truncations=truncations,
+                infos=infos,
+            )
+
+            online_episode_return += np.mean(list(rewards.values()), dtype="float")
+
+            if infos.get('battle_won', False):
+                online_wins += 1
+
+            done = all(terminals.values()) or all(truncations.values())
+            if done:
+                online_episode_count += 1
+                if online_episode_count % 10 == 0:
+                    wandb.log({
+                        'online/episode_return': online_episode_return,
+                        'online/episode_count': online_episode_count,
+                        'online/cumulative_win_rate': online_wins / online_episode_count,
+                    }, step=step)
+
+                online_episode_return = 0.0
+                observations, infos = online_env.reset()
+                carry = None
+                reset_mask = None
+            else:
+                observations = next_observations
+                if is_discrete:
+                    reset_mask = jnp.asarray(
+                        [terminals[ag] for ag in agent.agent_names], dtype=jnp.bool_,
+                    )
+
+            batch = online_buffer.sample()
             agent, info = agent.update(batch, step)
 
             if step % FLAGS.log_interval == 0:
@@ -272,7 +327,16 @@ def main(_):
                 wandb.log(eval_metrics, step=step)
                 eval_csv.log(eval_metrics, step=step)
 
-    # -------- Cleanup --------
+            if step % FLAGS.save_interval == 0:
+                from utils.flax_utils import save_agent
+                save_agent(agent, save_root, step)
+
+        if hasattr(online_env, 'close'):
+            try:
+                online_env.close()
+            except Exception:
+                pass
+
     for e in eval_env_pool:
         if hasattr(e, 'close'):
             try:
@@ -283,20 +347,11 @@ def main(_):
     eval_csv.close()
 
 
-# ========================== Evaluation ========================== #
 def _evaluate(agent, env_factory, is_discrete, n_eps=10, seed=0,
               eval_vgf_steps=None, num_workers=1, env_pool=None):
-    """Evaluate agent across episodes, handling both discrete and continuous.
-
-    Args:
-        env_pool: Optional list of pre-created environments to reuse (avoids
-            expensive SC2 process startup). When provided, environments are
-            reset and reused instead of creating new ones.
-    """
-    eval_results = [None] * n_eps  # (episode_return, battle_won)
+    eval_results = [None] * n_eps
 
     def _run_episode(ep_idx):
-        # Use pool env if available, otherwise create new
         if env_pool and ep_idx < len(env_pool):
             env = env_pool[ep_idx]
             close_env = False
@@ -313,7 +368,6 @@ def _evaluate(agent, env_factory, is_discrete, n_eps=10, seed=0,
 
         while not done:
             if is_discrete:
-                # Discrete evaluation: use sample_actions_with_carry
                 if hasattr(agent, 'sample_actions_with_carry'):
                     actions, carry = agent.sample_actions_with_carry(
                         observations, carry,
@@ -329,13 +383,11 @@ def _evaluate(agent, env_factory, is_discrete, n_eps=10, seed=0,
                         eval_vgf_steps=eval_vgf_steps,
                     )
 
-                # Convert to int for discrete envs
                 actions = {
                     name: int(actions[name].item())
                     for name in agent.agent_names
                 }
             else:
-                # Continuous evaluation
                 kwargs = {}
                 if eval_vgf_steps is not None:
                     kwargs['eval_vgf_steps'] = eval_vgf_steps
@@ -348,7 +400,6 @@ def _evaluate(agent, env_factory, is_discrete, n_eps=10, seed=0,
             observations, rewards, terminal, truncation, infos = env.step(actions)
             episode_return += np.mean(list(rewards.values()), dtype="float")
 
-            # Track battle_won from SMAC environments
             if infos.get('battle_won', False):
                 battle_won = True
 
@@ -367,7 +418,6 @@ def _evaluate(agent, env_factory, is_discrete, n_eps=10, seed=0,
         return (episode_return, battle_won)
 
     if env_pool:
-        # Sequential when using pool (environments are not thread-safe)
         for i in range(n_eps):
             eval_results[i] = _run_episode(i)
     elif num_workers > 1:
@@ -385,10 +435,14 @@ def _evaluate(agent, env_factory, is_discrete, n_eps=10, seed=0,
         valid = [(0.0, False)]
     returns = [r[0] for r in valid]
     wins = [r[1] for r in valid]
+    rets_sorted = np.sort(np.asarray(returns))
+    k25 = max(1, int(0.25 * len(rets_sorted)))
     return {
         f"evaluation/mean_episode_return{suffix}": np.mean(returns),
         f"evaluation/max_episode_return{suffix}": np.max(returns),
         f"evaluation/min_episode_return{suffix}": np.min(returns),
+        f"evaluation/cvar25_return{suffix}": float(rets_sorted[:k25].mean()),
+        f"evaluation/cvar50_return{suffix}": float(rets_sorted[:max(1, len(rets_sorted) // 2)].mean()),
         f"evaluation/win_rate{suffix}": np.mean(wins),
         f"evaluation/wins{suffix}": int(np.sum(wins)),
     }

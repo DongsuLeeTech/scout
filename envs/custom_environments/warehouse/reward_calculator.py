@@ -36,25 +36,12 @@ class RewardCalculator:
     def calculate(env, reward, prev_obs, obs):
         obs: Observation = ObservationParser.parse(obs)
 
-        # requested shelf
         if RewardCalculator.is_center_shelf(obs, True):
             if obs.is_carrying:
                 reward += 0.006
             else:
                 reward += 0.003
 
-            # reward += RewardCalculator.position_reward(env, obs.x, obs.y)
-        #
-        # # non requested shelf
-        # if RewardCalculator.is_center_shelf(obs, False):
-        #     if obs.is_carrying:
-        #         reward -= 0.003
-        #     else:
-        #         reward -= 0.0015
-        #
-        #     reward -= RewardCalculator.position_reward(env, obs.x, obs.y)
-
-        # find out requested item
         if RewardCalculator.find_requested_shelf(obs) is not None:
             reward += 0.001
 

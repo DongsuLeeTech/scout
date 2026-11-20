@@ -208,7 +208,6 @@ class DiffusionPlanner(nn.Module):
                 t = (t - 1.0 / ns.total_N) * ns.total_N
 
                 out = model_fn(rng, x, t, returns=returns)
-                # add noise clipping
                 if noise_clip:
                     t = t.astype(jnp.int32)
                     x_w = _extract_into_tensor(
@@ -236,7 +235,6 @@ class DiffusionPlanner(nn.Module):
         return out
 
     def ddim_sample(self, rng, conditions, deterministic=False, returns=None):
-        # expect a loop-jitted version of ddim_sample_loop, otherwise it's too slow
         raise NotImplementedError
         batch_size = list(conditions.items())[0].shape[0]
         return self.diffusion.ddim_sample_loop(

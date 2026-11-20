@@ -19,7 +19,6 @@ class Conv1dBlock(nn.Module):
         else:
             act_fn = nn.silu
 
-        # NOTE(zbzhu): in flax, conv use the channel last format
         x = nn.Conv(
             self.out_channels, (self.kernel_size,), padding=self.kernel_size // 2
         )(x)
@@ -88,18 +87,9 @@ def mish(x):
 
 
 def sinusoidal_embedding(timesteps, dim, max_period=10000):
-    """
-    Create sinusoidal timestep embeddings.
-    :param timesteps: a 1-D Tensor of N indices, one per batch element.
-                      These may be fractional.
-    :param dim: the dimension of the output.
-    :param max_period: controls the minimum frequency of the embeddings.
-    :return: an [N x dim] Tensor of positional embeddings.
-    """
 
     half = dim // 2
     freqs = jnp.exp(-jnp.log(max_period) * jnp.arange(half, dtype=jnp.float32) / half)
-    # args = timesteps[:, None] * freqs[None, :]
     args = jnp.expand_dims(timesteps, axis=-1) * freqs[None, :]
     embd = jnp.concatenate([jnp.cos(args), jnp.sin(args)], axis=-1)
     return embd

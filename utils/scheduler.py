@@ -26,33 +26,27 @@ class GaussianDiffusion:
         self.alphas_cumprod_next = jnp.append(self.alphas_cumprod[1:], 0.0)
         assert self.alphas_cumprod_prev.shape == (self.num_timesteps,)
 
-        # calculations for diffusion q(x_t | x_{t-1}) and others
         self.sqrt_alphas_cumprod = jnp.sqrt(self.alphas_cumprod)
         self.sqrt_one_minus_alphas_cumprod = jnp.sqrt(1.0 - self.alphas_cumprod)
         self.log_one_minus_alphas_cumprod = jnp.log(1.0 - self.alphas_cumprod)
         self.sqrt_recip_alphas_cumprod = jnp.sqrt(1.0 / self.alphas_cumprod)
         self.sqrt_recipm1_alphas_cumprod = jnp.sqrt(1.0 / self.alphas_cumprod - 1)
 
-        # calculations for posterior q(x_{t-1} | x_t, x_0)
         self.posterior_variance = (
                 betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
         )
-        # below: log calculation clipped because the posterior variance is 0 at the beginning of the diffusion chain
         self.posterior_log_variance_clipped = jnp.log(
             jnp.append(self.posterior_variance[1], self.posterior_variance[1:])
         ) if len(self.posterior_variance) > 1 else jnp.array([])
 
-        # (beta_t * atm1.sqrt()) / (1.0 - at)
         self.posterior_mean_coef1 = (
                 betas * jnp.sqrt(self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
         )
-        # ((1 - atm1) * (1 - beta_t).sqrt()) / (1.0 - at)
         self.posterior_mean_coef2 = (
                 (1.0 - self.alphas_cumprod_prev) * jnp.sqrt(alphas) / (1.0 - self.alphas_cumprod)
         )
 
-    def q_sample(self, x_start, t, eps):  # q(x_t | x_0)
-        """ q(x_t | x_0) """
+    def q_sample(self, x_start, t, eps):
         assert eps.shape == x_start.shape
         return (
                 _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
@@ -67,7 +61,6 @@ class GaussianDiffusion:
         )
 
     def p_mean_variance(self, x_t, t, eps, clip=True):
-        """p(x_{t-1} | x_t """
         model_variance = _extract_into_tensor(self.posterior_variance, t, x_t.shape)
         model_log_variance = _extract_into_tensor(self.posterior_log_variance_clipped, t, x_t.shape)
         pred_xstart = self._predict_xstart_from_eps(x_t=x_t, t=t, eps=eps)

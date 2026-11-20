@@ -7,12 +7,10 @@ import jax
 
 
 def default_init(scale=1.0):
-    """Default kernel initializer."""
     return nn.initializers.variance_scaling(scale, 'fan_avg', 'uniform')
 
 
 def ensemblize(cls, num_qs, in_axes=None, out_axes=0, **kwargs):
-    """Ensemblize a module."""
     return nn.vmap(
         cls,
         variable_axes={'params': 0, 'intermediates': 0},
@@ -25,22 +23,12 @@ def ensemblize(cls, num_qs, in_axes=None, out_axes=0, **kwargs):
 
 
 class Identity(nn.Module):
-    """Identity layer."""
 
     def __call__(self, x):
         return x
 
 
 class MLP(nn.Module):
-    """Multi-layer perceptron.
-
-    Attributes:
-        hidden_dims: Hidden layer dimensions.
-        activations: Activation function.
-        activate_final: Whether to apply activation to the final layer.
-        kernel_init: Kernel initializer.
-        layer_norm: Whether to apply layer normalization.
-    """
 
     hidden_dims: Sequence[int]
     activations: Any = nn.gelu
@@ -62,7 +50,6 @@ class MLP(nn.Module):
 
 
 class LogParam(nn.Module):
-    """Scalar parameter module with log scale."""
 
     init_value: float = 1.0
 
@@ -73,7 +60,6 @@ class LogParam(nn.Module):
 
 
 class TransformedWithMode(distrax.Transformed):
-    """Transformed distribution with mode calculation."""
 
     def mode(self):
         return self.bijector.forward(self.distribution.mode())
@@ -336,17 +322,6 @@ class MixNet(nn.Module):
 
 
 class SequenceLSTMEncoder(nn.Module):
-    """Sequence encoder with optional per-step encoder and stacked LSTM.
-
-    Inputs are expected to be time-major: (T, B, N, ...), but any leading batch
-    shape is supported as long as time is the first dimension.
-
-    - Optionally applies a `point_encoder` to each timestep independently
-      (e.g., CNN/MLP) before the recurrent layers.
-    - Stacked LSTM(s) then process features over time with reset masking.
-    - Returns per-timestep hidden states of the top LSTM layer with the same
-      leading shape as inputs, replacing the feature dimension.
-    """
 
     hidden_dim: int
     num_layers: int = 1
@@ -358,19 +333,13 @@ class SequenceLSTMEncoder(nn.Module):
     def __call__(self, observations, resets: Optional[jnp.ndarray] = None,
                  initial_carry: Optional[Sequence[Any]] = None,
                  return_carry: bool = False):
-        # observations: (T, B, N, F...) -> flatten trailing feature dims if needed
-        # Accept arbitrary leading dims after T; combine them to an effective batch M
         x = observations
-        # Flatten any spatial dims before MLP/LSTM; apply point encoder first if given
         if self.point_encoder is not None:
-            # point_encoder should broadcast over leading dims automatically
             x = self.point_encoder(x)
-        # Ensure last dim is feature
         x = x.reshape(x.shape[: -1] + (-1,)) if x.ndim >= 2 else x
 
         T = x.shape[0]
-        leading_shape = x.shape[1:-1]  # e.g., (B, N)
-        # compute M using Python ints from shape, avoiding JAX tracers
+        leading_shape = x.shape[1:-1]
         M = 1
         if len(leading_shape) > 0:
             for d in leading_shape:
@@ -382,21 +351,18 @@ class SequenceLSTMEncoder(nn.Module):
         if self.pre_mlp_dims:
             x_flat = MLP(self.pre_mlp_dims, activate_final=True, layer_norm=self.layer_norm)(x_flat)
 
-        # Simple, version-agnostic zero carry with batch dim M
         def _zero_carry(batch_size: int, hidden: int, dtype):
             c = jnp.zeros((batch_size, hidden), dtype)
             h = jnp.zeros((batch_size, hidden), dtype)
             return (c, h)
 
-        # Wrapper cell that applies reset mask before calling LSTMCell
         class _ResetLSTMCell(nn.Module):
             hidden_dim: int
             @nn.compact
             def __call__(self, carry, inputs):
-                x_t, reset_t = inputs  # (M, D), (M,)
+                x_t, reset_t = inputs
                 lstm = nn.OptimizedLSTMCell(self.hidden_dim)
 
-                # Support both tuple and object state
                 def _get_c_h(s):
                     if hasattr(s, 'c') and hasattr(s, 'h'):
                         return s.c, s.h
@@ -438,13 +404,11 @@ class SequenceLSTMEncoder(nn.Module):
             if initial_carry is None:
                 resets_flat = resets_flat.at[0, :].set(True)
 
-        # Prepare initial carries
         if initial_carry is None:
             carries = tuple(_zero_carry(M, self.hidden_dim, x_flat.dtype) for _ in range(self.num_layers))
         else:
             carries = tuple(initial_carry)
 
-        # Apply stacked LSTMs with nn.scan over time
         y = x_flat
         new_carries = []
         for i in range(self.num_layers):

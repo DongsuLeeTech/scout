@@ -106,17 +106,15 @@ def batched_agents(agents: Sequence[str],
             continue
         out[k] = jnp.stack(out[k], axis=2)
 
-    out["terminals"]   = out["terminals"].astype(jnp.float32)
+    out["terminals"] = out["terminals"].astype(jnp.float32)
     out["truncations"] = out["truncations"].astype(jnp.float32)
 
-    # optional infos
     infos_in = batch_dict.get("infos", {})
     if "legals" in infos_in:
         out["infos"]["legals"] = jnp.stack([infos_in["legals"][ag] for ag in agents], axis=2)
     if "state" in infos_in:
         out["infos"]["state"] = jnp.asarray(infos_in["state"], dtype=jnp.float32)
 
-    # mask
     if "mask" in infos_in:
         out["mask"] = jnp.asarray(infos_in["mask"], dtype=jnp.float32)
     else:

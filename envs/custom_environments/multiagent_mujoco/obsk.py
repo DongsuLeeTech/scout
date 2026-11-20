@@ -53,22 +53,11 @@ def get_joints_at_kdist(
     k=0,
     kagents=False,
 ):
-    """Identify all joints at distance <= k from agent agent_id
-
-    :param agent_id: id of agent to be considered
-    :param agent_partitions: list of joint tuples in order of agentids
-    :param edges: list of tuples (joint1, joint2)
-    :param k: kth degree
-    :param kagents: True (observe all joints of an agent if a single one is) or False (individual joint granularity)
-    :return:
-        dict with k as key, and list of joints at that distance
-    """
     assert not kagents, "kagents not implemented!"
 
     agent_joints = agent_partitions[agent_id]
 
     def _adjacent(lst, kagents=False):
-        # return all sets adjacent to any element in lst
         ret = set([])
         for l in lst:
             ret = ret.union(
@@ -91,22 +80,8 @@ def get_joints_at_kdist(
 
 
 def build_obs(env, k_dict, k_categories, global_dict, global_categories, vec_len=None):
-    """Given a k_dict from get_joints_at_kdist, extract observation vector.
-
-    :param k_dict: k_dict
-    :param qpos: qpos numpy array
-    :param qvel: qvel numpy array
-    :param vec_len: if None no padding, else zero-pad to vec_len
-    :return:
-    observation vector
-    """
-    # TODO: This needs to be fixed, it was designed for half-cheetah only!
-    # if add_global_pos:
-    #    obs_qpos_lst.append(global_qpos)
-    #    obs_qvel_lst.append(global_qvel)
     body_set_dict = {}
     obs_lst = []
-    # Add parts attributes
     for k in sorted(list(k_dict.keys())):
         cats = k_categories[k]
         for _t in k_dict[k]:
@@ -115,13 +90,13 @@ def build_obs(env, k_dict, k_categories, global_dict, global_categories, vec_len
                     items = _t.extra_obs[c](env).tolist()
                     obs_lst.extend(items if isinstance(items, list) else [items])
                 else:
-                    if c in ["qvel", "qpos"]:  # this is a "joint position/velocity" item
+                    if c in ["qvel", "qpos"]:
                         items = getattr(env.sim.data, c)[getattr(_t, "{}_ids".format(c))]
                         obs_lst.extend(items if isinstance(items, list) else [items])
-                    elif c in ["qfrc_actuator"]:  # this is a "vel position" item
+                    elif c in ["qfrc_actuator"]:
                         items = getattr(env.sim.data, c)[getattr(_t, "{}_ids".format("qvel"))]
                         obs_lst.extend(items if isinstance(items, list) else [items])
-                    elif c in ["cvel", "cinert", "cfrc_ext"]:  # this is a "body position" item
+                    elif c in ["cvel", "cinert", "cfrc_ext"]:
                         if _t.bodies is not None:
                             for b in _t.bodies:
                                 if c not in body_set_dict:
@@ -132,10 +107,9 @@ def build_obs(env, k_dict, k_categories, global_dict, global_categories, vec_len
                                     obs_lst.extend(items if isinstance(items, list) else [items])
                                     body_set_dict[c].add(b)
 
-    # Add global attributes
     body_set_dict = {}
     for c in global_categories:
-        if c in ["qvel", "qpos"]:  # this is a "joint position" item
+        if c in ["qvel", "qpos"]:
             for j in global_dict.get("joints", []):
                 items = getattr(env.sim.data, c)[getattr(j, "{}_ids".format(c))]
                 obs_lst.extend(items if isinstance(items, list) else [items])
@@ -152,24 +126,15 @@ def build_obs(env, k_dict, k_categories, global_dict, global_categories, vec_len
         if len(pad):
             return np.concatenate([np.array(obs_lst), pad])
 
-    # curr_s = list(env._get_obs())
-    # print ('s: {}'.format(curr_s))
-    # print ('obs: {}'.format(obs_lst))
-    # for dim in range(len(obs_lst)):
-    #     print (dim, curr_s.index(obs_lst[dim]))
-
     return np.array(obs_lst)
 
 
 def build_actions(agent_partitions, k_dict):
-    # Composes agent actions output from networks
-    # into coherent joint action vector to be sent to the env.
     pass
 
 
 def get_parts_and_edges(label, partitioning):
     if label in ["half_cheetah", "HalfCheetah-v2"]:
-        # define Mujoco graph
         bthigh = Node("bthigh", -6, -6, 0)
         bshin = Node("bshin", -5, -5, 1)
         bfoot = Node("bfoot", -4, -4, 2)
@@ -194,17 +159,14 @@ def get_parts_and_edges(label, partitioning):
             parts = [(bfoot, bshin, bthigh), (ffoot, fshin, fthigh)]
         elif partitioning == "6x1":
             parts = [(bfoot,), (bshin,), (bthigh,), (ffoot,), (fshin,), (fthigh,)]
-        # added by ling
         elif partitioning == "3x2":
             parts = [(bfoot, bshin), (bthigh, fthigh), (ffoot, fshin)]
-        # added by ling
         else:
             raise Exception("UNKNOWN partitioning config: {}".format(partitioning))
 
         return parts, edges, globals
 
     elif label in ["Ant-v2"]:
-        # define Mujoco graph
         torso = 1
         front_left_leg = 2
         aux_1 = 3
@@ -226,7 +188,7 @@ def get_parts_and_edges(label, partitioning):
             2,
             bodies=[torso, front_left_leg],
             body_fn=lambda _id, x: np.clip(x, -1, 1).tolist(),
-        )  #
+        )
         ankle1 = Node(
             "ankle1",
             -7,
@@ -234,7 +196,7 @@ def get_parts_and_edges(label, partitioning):
             3,
             bodies=[front_left_leg, aux_1, ankle_1],
             body_fn=lambda _id, x: np.clip(x, -1, 1).tolist(),
-        )  # ,
+        )
         hip2 = Node(
             "hip2",
             -6,
@@ -242,7 +204,7 @@ def get_parts_and_edges(label, partitioning):
             4,
             bodies=[torso, front_right_leg],
             body_fn=lambda _id, x: np.clip(x, -1, 1).tolist(),
-        )  # ,
+        )
         ankle2 = Node(
             "ankle2",
             -5,
@@ -250,7 +212,7 @@ def get_parts_and_edges(label, partitioning):
             5,
             bodies=[front_right_leg, aux_2, ankle_2],
             body_fn=lambda _id, x: np.clip(x, -1, 1).tolist(),
-        )  # ,
+        )
         hip3 = Node(
             "hip3",
             -4,
@@ -258,7 +220,7 @@ def get_parts_and_edges(label, partitioning):
             6,
             bodies=[torso, back_leg],
             body_fn=lambda _id, x: np.clip(x, -1, 1).tolist(),
-        )  # ,
+        )
         ankle3 = Node(
             "ankle3",
             -3,
@@ -266,7 +228,7 @@ def get_parts_and_edges(label, partitioning):
             7,
             bodies=[back_leg, aux_3, ankle_3],
             body_fn=lambda _id, x: np.clip(x, -1, 1).tolist(),
-        )  # ,
+        )
         hip4 = Node(
             "hip4",
             -2,
@@ -274,7 +236,7 @@ def get_parts_and_edges(label, partitioning):
             0,
             bodies=[torso, right_back_leg],
             body_fn=lambda _id, x: np.clip(x, -1, 1).tolist(),
-        )  # ,
+        )
         ankle4 = Node(
             "ankle4",
             -1,
@@ -282,7 +244,7 @@ def get_parts_and_edges(label, partitioning):
             1,
             bodies=[right_back_leg, aux_4, ankle_4],
             body_fn=lambda _id, x: np.clip(x, -1, 1).tolist(),
-        )  # ,
+        )
 
         edges = [
             HyperEdge(ankle4, hip4),
@@ -305,9 +267,9 @@ def get_parts_and_edges(label, partitioning):
         )
         globals = {"joints": [free_joint]}
 
-        if partitioning == "2x4":  # neighbouring legs together
+        if partitioning == "2x4":
             parts = [(hip1, ankle1, hip2, ankle2), (hip3, ankle3, hip4, ankle4)]
-        elif partitioning == "2x4d":  # diagonal legs together
+        elif partitioning == "2x4d":
             parts = [(hip1, ankle1, hip3, ankle3), (hip2, ankle2, hip4, ankle4)]
         elif partitioning == "4x2":
             parts = [(hip1, ankle1), (hip2, ankle2), (hip3, ankle3), (hip4, ankle4)]
@@ -317,7 +279,6 @@ def get_parts_and_edges(label, partitioning):
         return parts, edges, globals
 
     elif label in ["Hopper-v2"]:
-        # define Mujoco-Graph
         thigh_joint = Node(
             "thigh_joint",
             -3,
@@ -377,8 +338,7 @@ def get_parts_and_edges(label, partitioning):
         return parts, edges, globals
 
     elif label in ["Humanoid-v2", "HumanoidStandup-v2"]:
-        # define Mujoco-Graph
-        abdomen_y = Node("abdomen_y", -16, -16, 0)  # act ordering bug in env -- double check!
+        abdomen_y = Node("abdomen_y", -16, -16, 0)
         abdomen_z = Node("abdomen_z", -17, -17, 1)
         abdomen_x = Node("abdomen_x", -15, -15, 2)
         right_hip_x = Node("right_hip_x", -14, -14, 3)
@@ -412,8 +372,7 @@ def get_parts_and_edges(label, partitioning):
 
         globals = {}
 
-        if partitioning == "9|8":  # 17 in total, so one action is a dummy (to be handled by pymarl)
-            # isolate upper and lower body
+        if partitioning == "9|8":
             parts = [
                 (
                     left_shoulder1,
@@ -437,7 +396,6 @@ def get_parts_and_edges(label, partitioning):
                     left_knee,
                 ),
             ]
-            # TODO: There could be tons of decompositions here
 
         else:
             raise Exception("UNKNOWN partitioning config: {}".format(partitioning))
@@ -445,7 +403,6 @@ def get_parts_and_edges(label, partitioning):
         return parts, edges, globals
 
     elif label in ["Reacher-v2"]:
-        # define Mujoco-Graph
         body0 = 1
         body1 = 2
         fingertip = 3
@@ -489,9 +446,7 @@ def get_parts_and_edges(label, partitioning):
         globals = {"bodies": [worldbody, target], "joints": [target_x, target_y]}
 
         if partitioning == "2x1":
-            # isolate upper and lower arms
             parts = [(joint0,), (joint1,)]
-            # TODO: There could be tons of decompositions here
 
         else:
             raise Exception("UNKNOWN partitioning config: {}".format(partitioning))
@@ -499,17 +454,14 @@ def get_parts_and_edges(label, partitioning):
         return parts, edges, globals
 
     elif label in ["Swimmer-v2"]:
-        # define Mujoco-Graph
-        joint0 = Node("rot2", -2, -2, 0)  # TODO: double-check ids
+        joint0 = Node("rot2", -2, -2, 0)
         joint1 = Node("rot3", -1, -1, 1)
 
         edges = [HyperEdge(joint0, joint1)]
         globals = {}
 
         if partitioning == "2x1":
-            # isolate upper and lower body
             parts = [(joint0,), (joint1,)]
-            # TODO: There could be tons of decompositions here
 
         else:
             raise Exception("UNKNOWN partitioning config: {}".format(partitioning))
@@ -517,7 +469,6 @@ def get_parts_and_edges(label, partitioning):
         return parts, edges, globals
 
     elif label in ["Walker2d-v2"]:
-        # define Mujoco-Graph
         thigh_joint = Node("thigh_joint", -6, -6, 0)
         leg_joint = Node("leg_joint", -5, -5, 1)
         foot_joint = Node("foot_joint", -4, -4, 2)
@@ -535,7 +486,6 @@ def get_parts_and_edges(label, partitioning):
         globals = {}
 
         if partitioning == "2x3":
-            # isolate upper and lower body
             parts = [
                 (foot_joint, leg_joint, thigh_joint),
                 (
@@ -544,7 +494,6 @@ def get_parts_and_edges(label, partitioning):
                     thigh_left_joint,
                 ),
             ]
-            # TODO: There could be tons of decompositions here
 
         else:
             raise Exception("UNKNOWN partitioning config: {}".format(partitioning))
@@ -552,7 +501,6 @@ def get_parts_and_edges(label, partitioning):
         return parts, edges, globals
 
     elif label in ["coupled_half_cheetah"]:
-        # define Mujoco graph
         tendon = 0
 
         bthigh = Node(
@@ -621,7 +569,6 @@ def get_parts_and_edges(label, partitioning):
         return parts, edges, globals
 
     elif label in ["manyagent_swimmer"]:
-        # Generate asset file
         try:
             n_agents = int(partitioning.split("x")[0])
             n_segs_per_agents = int(partitioning.split("x")[1])
@@ -629,9 +576,6 @@ def get_parts_and_edges(label, partitioning):
         except Exception:
             raise Exception("UNKNOWN partitioning config: {}".format(partitioning))
 
-        # Note: Default Swimmer corresponds to n_segs = 3
-
-        # define Mujoco-Graph
         joints = [Node("rot{:d}".format(i), -n_segs + i, -n_segs + i, i) for i in range(0, n_segs)]
         edges = [HyperEdge(joints[i], joints[i + 1]) for i in range(n_segs - 1)]
         globals = {}
@@ -642,34 +586,13 @@ def get_parts_and_edges(label, partitioning):
         ]
         return parts, edges, globals
 
-    elif label in ["manyagent_ant"]:  # TODO: FIX!
-        # Generate asset file
+    elif label in ["manyagent_ant"]:
         try:
             n_agents = int(partitioning.split("x")[0])
             n_segs_per_agents = int(partitioning.split("x")[1])
             n_segs = n_agents * n_segs_per_agents
         except Exception:
             raise Exception("UNKNOWN partitioning config: {}".format(partitioning))
-
-        # # define Mujoco graph
-        # torso = 1
-        # front_left_leg = 2
-        # aux_1 = 3
-        # ankle_1 = 4
-        # right_back_leg = 11
-        # aux_4 = 12
-        # ankle_4 = 13
-        #
-        # off = -4*(n_segs-1)
-        # hip1 = Node("hip1", -4-off, -4-off, 2, bodies=[torso, front_left_leg], body_fn=lambda _id, x:np.clip(x, -1, 1).tolist()) #
-        # ankle1 = Node("ankle1", -3-off, -3-off, 3, bodies=[front_left_leg, aux_1, ankle_1], body_fn=lambda _id, x:np.clip(x, -1, 1).tolist())#,
-        # hip4 = Node("hip4", -2-off, -2-off, 0, bodies=[torso, right_back_leg], body_fn=lambda _id, x:np.clip(x, -1, 1).tolist())#,
-        # ankle4 = Node("ankle4", -1-off, -1-off, 1, bodies=[right_back_leg, aux_4, ankle_4], body_fn=lambda _id, x:np.clip(x, -1, 1).tolist())#,
-        #
-        # edges = [HyperEdge(ankle4, hip4),
-        #          HyperEdge(ankle1, hip1),
-        #          HyperEdge(hip4, hip1),
-        #          ]
 
         edges = []
         joints = []

@@ -1,4 +1,5 @@
 import copy
+import functools
 from typing import Any, Dict, Sequence
 
 import flax
@@ -14,27 +15,17 @@ from util import *
 
 
 class ScoutAgent(flax.struct.PyTreeNode):
-    """Unified Scout (VGF) agent supporting both discrete and continuous actions.
-
-    Uses Value Gradient Flow (SVGD) to refine flow-based initial particles
-    toward higher-Q regions of the action/logit space.
-
-    Set config['is_discrete'] = True for discrete (SMAC-style) environments
-    or False for continuous (MAMuJoCo-style) environments.
-    """
     rng: Any
     network: Any
     agent_names: Sequence[str] = nonpytree_field()
     config: Any = nonpytree_field()
 
-    # -------------------- Time Embedding (discrete only) -------------------- #
     def _time_sin_embed(self, ts):
         kfreq = int(self.config.get('t_embed_frequencies', 8))
         freqs = jnp.asarray([2 ** i for i in range(kfreq)], dtype=ts.dtype) * jnp.pi
         ang = ts * freqs
         return jnp.concatenate([jnp.sin(ang), jnp.cos(ang)], axis=-1)
 
-    # -------------------- VGF Helpers -------------------- #
     def _rbf_kernel(self, X, Y):
         X2 = jnp.sum(X * X, axis=-1, keepdims=True)
         Y2 = jnp.sum(Y * Y, axis=-1, keepdims=True).transpose(0, 2, 1)
@@ -100,10 +91,8 @@ class ScoutAgent(flax.struct.PyTreeNode):
         grad_clip = self.config.get('vgf_grad_clip', 0.0)
         for _ in range(steps):
             phi, tr = self._vgf_phi(obs_rep, particles, alpha)
-            # BC regularization: penalize drift from initial BC particles
             if bc_reg > 0:
                 phi = phi - bc_reg * (particles - init_particles)
-            # Gradient clipping on phi
             if grad_clip > 0:
                 phi_norm = jnp.linalg.norm(phi, axis=-1, keepdims=True)
                 phi = phi * jnp.minimum(1.0, grad_clip / (phi_norm + 1e-8))
@@ -175,36 +164,58 @@ class ScoutAgent(flax.struct.PyTreeNode):
                 sel = particles.mean(axis=1)
             return sel
 
-    # -------------------- LVC Loss -------------------- #
     def lvc_loss(self, batch, grad_params, rng):
-        A = self.config['action_dim']
-        obs = batch['observations'][:-1]  # (T, B, N, O)
-        T, B, N, O = obs.shape
-        obs_flat = obs.reshape(-1, O)  # (T*B*N, O)
-        M = obs_flat.shape[0]
-
-        # Compute Q-values for all actions at each (s, agent) pair
-        eye_A = jnp.eye(A, dtype=obs_flat.dtype)  # (A, A)
-        obs_rep = jnp.repeat(obs_flat, A, axis=0)  # (M*A, O)
-        act_rep = jnp.tile(eye_A, (M, 1))  # (M*A, A)
-
-        q_all = self.network.select('q')(obs_rep, actions=act_rep, params=grad_params)
-        q_all = q_all.mean(axis=0).reshape(M, A)  # ensemble mean -> (M, A)
-
-        # Softmax Q-distribution per agent
+        is_discrete = self.config['is_discrete']
         tau = self.config.get('lvc_temperature', 1.0)
-        log_q_probs = jax.nn.log_softmax(q_all / tau, axis=-1)
-
-        # Calibration target: smoothed one-hot from data actions
-        actions_flat = batch['actions'][:-1].reshape(-1)  # (M,)
         eps = self.config.get('lvc_label_smoothing', 0.1)
-        beta = (1 - eps) * jax.nn.one_hot(actions_flat, A) + eps / A
 
-        # Cross-entropy: -sum(beta * log_softmax(Q/tau))
-        lvc = -jnp.sum(beta * log_q_probs, axis=-1).mean()
-        return lvc, {'lvc_loss': lvc}
+        if is_discrete:
+            A = self.config['action_dim']
+            obs = batch['observations'][:-1]
+            T, B, N, O = obs.shape
+            obs_flat = obs.reshape(-1, O)
+            M = obs_flat.shape[0]
 
-    # -------------------- Losses -------------------- #
+            eye_A = jnp.eye(A, dtype=obs_flat.dtype)
+            obs_rep = jnp.repeat(obs_flat, A, axis=0)
+            act_rep = jnp.tile(eye_A, (M, 1))
+
+            q_all = self.network.select('q')(obs_rep, actions=act_rep, params=grad_params)
+            q_all = q_all.mean(axis=0).reshape(M, A)
+
+            log_q_probs = jax.nn.log_softmax(q_all / tau, axis=-1)
+
+            actions_flat = batch['actions'][:-1].reshape(-1)
+            beta = (1 - eps) * jax.nn.one_hot(actions_flat, A) + eps / A
+            lvc = -jnp.sum(beta * log_q_probs, axis=-1).mean()
+            return lvc, {'lvc_loss': lvc}
+        else:
+            A = self.config['action_dim']
+            obs = batch['observations'][:-1]
+            acts = batch['actions'][:-1]
+            T, B, N, O = obs.shape
+            obs_flat = obs.reshape(-1, O)
+            act_data = acts.reshape(-1, A)
+            M = obs_flat.shape[0]
+
+            K = self.config.get('lvc_num_negatives', 8)
+            neg_rng, _ = jax.random.split(rng)
+            negs = jax.random.uniform(neg_rng, (M, K, A), minval=-1.0, maxval=1.0)
+
+            all_acts = jnp.concatenate([act_data[:, None, :], negs], axis=1)
+            obs_rep = jnp.broadcast_to(obs_flat[:, None, :], (M, K + 1, O)).reshape(-1, O)
+            acts_rep = all_acts.reshape(-1, A)
+
+            q_all = self.network.select('critic')(obs_rep, actions=acts_rep, params=grad_params)
+            q_all = q_all.mean(axis=0).reshape(M, K + 1)
+
+            log_q_probs = jax.nn.log_softmax(q_all / tau, axis=-1)
+
+            target = jax.nn.one_hot(jnp.zeros(M, dtype=jnp.int32), K + 1)
+            beta = (1 - eps) * target + eps / (K + 1)
+            lvc = -jnp.sum(beta * log_q_probs, axis=-1).mean()
+            return lvc, {'lvc_loss': lvc}
+
     def critic_loss(self, batch, grad_params, rng):
         is_discrete = self.config['is_discrete']
         q_name = 'q' if is_discrete else 'critic'
@@ -334,22 +345,19 @@ class ScoutAgent(flax.struct.PyTreeNode):
         return bc_flow_loss, {'bc_flow_loss': bc_flow_loss}
 
     def actor_bc_loss_joint(self, batch, grad_params, rng):
-        """Joint flow BC: concatenate all agents' actions into a single joint action vector."""
         is_discrete = self.config['is_discrete']
         rng, x_rng, t_rng = jax.random.split(rng, 3)
 
         if is_discrete:
             T, B, N = batch['actions'].shape
             A = self.config['action_dim']
-            actions_oh = jax.nn.one_hot(batch['actions'], A)  # (T, B, N, A)
-            # Concat agents: (T, B, N, A) -> (T, B, 1, N*A)
+            actions_oh = jax.nn.one_hot(batch['actions'], A)
             x_1 = actions_oh.reshape(T, B, 1, N * A)
             x_0 = jax.random.normal(x_rng, x_1.shape)
             t_scalar = jax.random.uniform(t_rng, (*x_1.shape[:-1], 1))
             x_t = (1 - t_scalar) * x_0 + t_scalar * x_1
             vel = x_1 - x_0
 
-            # Concat observations: (T, B, N, O) -> (T, B, 1, N*O)
             obs_joint = batch['observations'].reshape(T, B, 1, -1)
 
             t_embed = self._time_sin_embed(t_scalar)
@@ -418,9 +426,8 @@ class ScoutAgent(flax.struct.PyTreeNode):
         critic_coef = self.config.get('critic_coef', 1.0)
         loss = critic_coef * critic_loss + bc_loss
 
-        # LVC (Local Value Calibration) - discrete only
         lvc_coef = self.config.get('lvc_coef', 0.0)
-        if lvc_coef > 0 and self.config['is_discrete']:
+        if lvc_coef > 0:
             lvc_val, lvc_info = self.lvc_loss(batch, grad_params, rng)
             for k, v in lvc_info.items():
                 info[f'lvc/{k}'] = v
@@ -460,7 +467,6 @@ class ScoutAgent(flax.struct.PyTreeNode):
 
         return self.replace(network=new_network, rng=new_rng), info
 
-    # -------------------- Action Sampling (Evaluation) -------------------- #
     def _masked_softmax(self, logits, mask=None):
         if mask is None:
             return jax.nn.softmax(logits, axis=-1)
@@ -477,7 +483,6 @@ class ScoutAgent(flax.struct.PyTreeNode):
                                   eval_vgf_steps=None,
                                   temperature: float = 0.0,
                                   stochastic: bool = False):
-        """Sample actions with carry (for discrete + LSTM evaluation)."""
         rng = seed if seed is not None else self.rng
         action_seed, _ = jax.random.split(rng)
         N = len(self.agent_names)
@@ -515,13 +520,8 @@ class ScoutAgent(flax.struct.PyTreeNode):
         actions = self._vgf_select(obs_rep, particles, mode=self.config['eval_particle_select'], module='q', legal_masks=masks)
         return {agent: actions[i] for i, agent in enumerate(self.agent_names)}, new_carry
 
-    @jax.jit
+    @functools.partial(jax.jit, static_argnames=('eval_vgf_steps', 'stochastic'))
     def sample_actions(self, observations: Dict[str, jnp.ndarray], seed, legal_actions=None, eval_vgf_steps=None, temperature=0.0, stochastic=False):
-        """Sample actions for evaluation.
-
-        For discrete: uses VGF on logits + argmax.
-        For continuous: uses VGF on action particles + clip.
-        """
         if self.config['is_discrete']:
             actions, _ = self.sample_actions_with_carry(
                 observations, carry=None, seed=seed,
@@ -545,10 +545,8 @@ class ScoutAgent(flax.struct.PyTreeNode):
             actions = jnp.clip(actions, -1, 1)
             return {agent: actions[i] for i, agent in enumerate(self.agent_names)}
 
-    # -------------------- Flow Integration -------------------- #
     @jax.jit
     def compute_flow_logits(self, observations, noises, is_encoded=False):
-        """Multi-step flow integration for discrete logits."""
         if (self.config['encoder'] is not None) and (not self.config.get('use_lstm', False)) and (not is_encoded):
             observations = self.network.select('actor_bc_flow_encoder')(observations)
         actions = noises
@@ -561,7 +559,6 @@ class ScoutAgent(flax.struct.PyTreeNode):
 
     @jax.jit
     def compute_flow_actions(self, observations, noises):
-        """Multi-step flow integration for continuous actions."""
         if self.config['encoder'] is not None:
             observations = self.network.select('actor_bc_encoder')(observations)
         actions = noises
@@ -571,7 +568,6 @@ class ScoutAgent(flax.struct.PyTreeNode):
             actions = actions + vels / self.config['flow_steps']
         return jnp.clip(actions, -1, 1)
 
-    # -------------------- Factory -------------------- #
     @classmethod
     def create(cls, seed, ex_observations, ex_actions, agent_names, config):
         rng = jax.random.PRNGKey(seed)
@@ -635,7 +631,6 @@ class ScoutAgent(flax.struct.PyTreeNode):
             **{actor_bc_key: (actor_bc_def, (ex_obs_init, ex_actions, ex_times))},
         )
 
-        # Joint flow BC network (optional)
         if config.get('joint_flow_bc', False):
             n_agents = len(agent_names)
             joint_action_dim = action_dim * n_agents
@@ -650,7 +645,6 @@ class ScoutAgent(flax.struct.PyTreeNode):
                 action_dim=joint_action_dim,
                 layer_norm=config['actor_layer_norm'],
             )
-            # Example inputs for joint network: obs_dim=N*O, act_dim=N*A
             ex_joint_obs = jnp.zeros((1, 1, 1, joint_obs_dim), dtype=jnp.float32)
             ex_joint_act = jnp.zeros((1, 1, 1, joint_action_dim), dtype=jnp.float32)
             if is_discrete:
@@ -684,7 +678,6 @@ class ScoutAgent(flax.struct.PyTreeNode):
 
         network_def = ModuleDict(networks)
         network_params = network_def.init(init_rng, **network_args)['params']
-        # LR schedule
         lr_schedule = config.get('lr_schedule', 'constant')
         if lr_schedule == 'cosine':
             total_steps = int(config.get('total_steps', 500_000))
@@ -699,7 +692,6 @@ class ScoutAgent(flax.struct.PyTreeNode):
         else:
             lr_fn = config['lr']
 
-        # Optimizer with optional gradient clipping
         max_grad_norm = config.get('max_grad_norm', 0)
         if max_grad_norm > 0:
             network_tx = optax.chain(
@@ -725,9 +717,7 @@ class ScoutAgent(flax.struct.PyTreeNode):
         )
 
 
-def get_config(variant=None):
-    if variant == 'v1':
-        return _get_v1_config()
+def get_config():
     return ml_collections.ConfigDict(
         dict(
             agent_name='scout',
@@ -745,7 +735,6 @@ def get_config(variant=None):
             critic_loss='td',
             flow_steps=10,
             encoder=ml_collections.config_dict.placeholder(str),
-            # VGF hyperparameters
             vgf_lr=1e-2,
             vgf_alpha=1.0,
             vgf_particles=10,
@@ -754,21 +743,20 @@ def get_config(variant=None):
             train_particle_select='mean',
             eval_particle_select='max',
             use_entropy=False,
-            # Stability options
+            vgf_bc_reg=0.0,
+            vgf_grad_clip=0.0,
             max_grad_norm=0.0,
             critic_coef=1.0,
             q_clip=0.0,
-            # LVC (Local Value Calibration) - discrete only
-            lvc_coef=0.0,               # 0 = disabled. TasQ suggests ~0.5
-            lvc_temperature=1.0,        # softmax temperature for Q-distribution
-            lvc_label_smoothing=0.1,    # smoothing for calibration target
+            lvc_coef=0.0,
+            lvc_temperature=1.0,
+            lvc_label_smoothing=0.1,
+            lvc_num_negatives=8,
             joint_flow_bc=False,
             target_reset_interval=0,
-            # LR schedule
             lr_schedule='constant',
             lr_warmup_steps=0,
             total_steps=500000,
-            # Discrete-only options
             t_embed_frequencies=8,
             use_lstm=False,
             lstm_hidden_dim=128,
@@ -777,28 +765,3 @@ def get_config(variant=None):
             lstm_layer_norm=True,
         )
     )
-
-
-def _get_v1_config():
-    """SCOUT v1: VGF improvements for test-time refinement.
-
-    Key changes from v0:
-    - train_vgf_steps=3: Q learns to evaluate VGF-refined actions
-    - vgf_lr=1e-3: less aggressive VGF step size (was 1e-2)
-    - vgf_bc_reg=0.1: penalize particle drift from BC distribution
-    - vgf_grad_clip=1.0: clip VGF gradient norm
-    - lvc_coef=0.5: enable local value calibration for Q
-    - max_grad_norm=1.0: gradient clipping for training
-    """
-    config = get_config()
-    config.agent_name = 'scout_v1'
-    # VGF refinement improvements
-    config.train_vgf_steps = 3
-    config.vgf_lr = 1e-3
-    config.vgf_bc_reg = 0.1
-    config.vgf_grad_clip = 1.0
-    # Q calibration
-    config.lvc_coef = 0.5
-    # Training stability
-    config.max_grad_norm = 1.0
-    return config

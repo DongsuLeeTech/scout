@@ -12,7 +12,6 @@ class ManyAgentAntEnv(mujoco_env.MujocoEnv, utils.EzPickle):
         n_segs_per_agents = int(agent_conf.split("x")[1])
         n_segs = n_agents * n_segs_per_agents
 
-        # Check whether asset file exists already, otherwise create it
         asset_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "assets",
@@ -20,16 +19,12 @@ class ManyAgentAntEnv(mujoco_env.MujocoEnv, utils.EzPickle):
                 n_agents, n_segs_per_agents
             ),
         )
-        # if not os.path.exists(asset_path):
         print(
             "Auto-Generating Manyagent Ant asset with {} segments at {}.".format(
                 n_segs, asset_path
             )
         )
         self._generate_asset(n_segs=n_segs, asset_path=asset_path)
-
-        # asset_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets',git p
-        #                          'manyagent_swimmer.xml')
 
         mujoco_env.MujocoEnv.__init__(self, asset_path, 4)
         utils.EzPickle.__init__(self)

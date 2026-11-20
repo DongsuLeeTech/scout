@@ -160,7 +160,6 @@ VAULT_INFO = {
 
 
 def print_download_options() -> Dict[str, Dict]:
-    """Prints as well as returns all options for downloading vaults from OG-MARL huggingface."""
     print("VAULT_INFO:")
     for source in VAULT_INFO.keys():
         print(f"\t {source}")
@@ -178,12 +177,6 @@ def download_and_unzip_vault(
     dataset_base_dir: str = "/data",
     dataset_download_url: str = "",
 ) -> str:
-    """Downloads and unzips vaults.
-
-    The location of the vault is dataset_base_dir/dataset_source/env_name/scenario_name/.
-    If the vault already exists and is not empty, the download does not happen.
-    """
-    # to prevent downloading the vault twice into the same folder
     if check_directory_exists_and_not_empty(
         f"{dataset_base_dir}/{dataset_source}/{env_name}/{scenario_name}.vlt"
     ):
@@ -192,11 +185,9 @@ def download_and_unzip_vault(
         )
         return f"{dataset_base_dir}/{dataset_source}/{env_name}/{scenario_name}.vlt"
 
-    # access url from what we have if not provided
     if len(dataset_download_url) == 0:
         dataset_download_url = VAULT_INFO[dataset_source][env_name][scenario_name]["url"]
 
-    # check that the URL works
     try:
         response = requests.get(dataset_download_url, stream=True)
     except Exception:
@@ -209,7 +200,6 @@ def download_and_unzip_vault(
 
     total_length = response.headers.get("content-length")
 
-    # make storage dirs
     os.makedirs(f"{dataset_base_dir}/tmp/", exist_ok=True)
     os.makedirs(f"{dataset_base_dir}/{dataset_source}/{env_name}/", exist_ok=True)
 
@@ -217,7 +207,7 @@ def download_and_unzip_vault(
     extraction_path = f"{dataset_base_dir}/{dataset_source}/{env_name}"
 
     with open(zip_file_path, "wb") as file:
-        if total_length is None:  # no content length header
+        if total_length is None:
             file.write(response.content)
         else:
             dl = 0
@@ -229,31 +219,25 @@ def download_and_unzip_vault(
                 sys.stdout.write("\r[%s%s]" % ("=" * done, " " * (50 - done)))
                 sys.stdout.flush()
 
-    # Step 2: Unzip the file
     with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
         zip_ref.extractall(extraction_path)
 
-    # Optionally, delete the zip file after extraction
     os.remove(zip_file_path)
 
     return f"{dataset_base_dir}/{dataset_source}/{env_name}/{scenario_name}.vlt"
 
 
 def check_directory_exists_and_not_empty(path: str) -> bool:
-    """Checks that the directory at path exists and is not empty."""
-    # Check if the directory exists
     if os.path.exists(path) and os.path.isdir(path):
-        # Check if the directory is not empty
-        if not os.listdir(path):  # This will return an empty list if the directory is empty
-            return False  # Directory exists but is empty
+        if not os.listdir(path):
+            return False
         else:
-            return True  # Directory exists and is not empty
+            return True
     else:
-        return False  # Directory does not exist
+        return False
 
 
 def get_available_uids(rel_vault_path: str) -> List[str]:
-    """Obtains the uids of datasets in a vault at the relative path."""
     vault_uids = sorted(
         next(os.walk(rel_vault_path))[1],
         reverse=True,

@@ -7,7 +7,6 @@ from .base import BaseEnvironment, ResetReturn, StepReturn
 
 
 class RWAREAlberDICE(BaseEnvironment):
-    """Note: currently only supports simple spread."""
 
     def __init__(self, scenario, seed=None):
 
@@ -59,7 +58,6 @@ class RWAREAlberDICE(BaseEnvironment):
         return observations, rewards, terminals, trunctations, info  # type: ignore
 
     def __getattr__(self, name: str) -> Any:
-        """Expose any other attributes of the underlying environment."""
         if hasattr(self.__class__, name):
             return self.__getattribute__(name)
         else:

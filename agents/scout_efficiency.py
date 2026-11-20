@@ -1,4 +1,5 @@
 import copy
+import functools
 from typing import Any, Dict, Sequence
 
 import flax
@@ -9,33 +10,22 @@ import optax
 
 from utils.encoders import encoder_modules
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
-from utils.networks import ActorVectorField, DQN, Value
+from utils.networks import ActorVectorField, DQN, QMixer, Value
 from util import *
 
 
 class ScoutEfficientAgent(flax.struct.PyTreeNode):
-    """Scout agent with DQN-style Q network for discrete environments.
-
-    Key optimization: For discrete actions, uses DQN(obs) -> Q(s, all_actions)
-    instead of Value(obs, one_hot_a) -> Q(s, a). This eliminates the A-fold
-    observation expansion in _vgf_phi, _vgf_select, lvc_loss, and critic_loss,
-    reducing Q network evaluations by ~A times (e.g., 9x for 3m).
-
-    Continuous environments use the original Value network (unchanged).
-    """
     rng: Any
     network: Any
     agent_names: Sequence[str] = nonpytree_field()
     config: Any = nonpytree_field()
 
-    # -------------------- Time Embedding (discrete only) -------------------- #
     def _time_sin_embed(self, ts):
         kfreq = int(self.config.get('t_embed_frequencies', 8))
         freqs = jnp.asarray([2 ** i for i in range(kfreq)], dtype=ts.dtype) * jnp.pi
         ang = ts * freqs
         return jnp.concatenate([jnp.sin(ang), jnp.cos(ang)], axis=-1)
 
-    # -------------------- VGF Helpers -------------------- #
     def _rbf_kernel(self, X, Y):
         X2 = jnp.sum(X * X, axis=-1, keepdims=True)
         Y2 = jnp.sum(Y * Y, axis=-1, keepdims=True).transpose(0, 2, 1)
@@ -57,9 +47,8 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
                 lg_f = lg.reshape(-1, lg.shape[-1])
                 pi = jax.nn.softmax(lg_f, axis=-1)
 
-                # DQN: single forward pass gives Q for ALL actions
-                qs = self.network.select(q_name)(obs_f)  # (ensemble, m*p, A)
-                q_mean = qs.mean(axis=0)  # (m*p, A)
+                qs = self.network.select(q_name)(obs_f)
+                q_mean = qs.mean(axis=0)
                 batch_mean = jax.lax.stop_gradient(jnp.mean(q_mean))
                 batch_std = jax.lax.stop_gradient(jnp.std(q_mean)) + 1e-6
                 q_norm = (q_mean - batch_mean) / batch_std
@@ -128,10 +117,9 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
 
             pi = jax.nn.softmax(lg_f_eff, axis=-1)
 
-            # DQN: single forward pass for all Q values
-            qs = self.network.select(module)(obs_f)  # (ensemble, m*p, A)
+            qs = self.network.select(module)(obs_f)
             if self.config.get('q_agg', 'min') == 'min':
-                q_mean = qs.min(axis=0)  # (m*p, A)
+                q_mean = qs.min(axis=0)
             else:
                 q_mean = qs.mean(axis=0)
             exp_q = jnp.sum(pi * q_mean, axis=-1).reshape(particles.shape[0], particles.shape[1])
@@ -165,16 +153,14 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
                 sel = particles.mean(axis=1)
             return sel
 
-    # -------------------- LVC Loss -------------------- #
     def lvc_loss(self, batch, grad_params, rng):
         A = self.config['action_dim']
         obs = batch['observations'][:-1]
         T, B, N, O = obs.shape
 
-        # DQN: single forward pass, no A-fold expansion
-        q_all = self.network.select('q')(obs, params=grad_params)  # (ensemble, T, B, N, A)
-        q_all = q_all.mean(axis=0)  # (T, B, N, A)
-        q_flat = q_all.reshape(-1, A)  # (M, A)
+        q_all = self.network.select('q')(obs, params=grad_params)
+        q_all = q_all.mean(axis=0)
+        q_flat = q_all.reshape(-1, A)
 
         tau = self.config.get('lvc_temperature', 1.0)
         log_q_probs = jax.nn.log_softmax(q_flat / tau, axis=-1)
@@ -186,7 +172,6 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
         lvc = -jnp.sum(beta * log_q_probs, axis=-1).mean()
         return lvc, {'lvc_loss': lvc}
 
-    # -------------------- Losses -------------------- #
     def critic_loss(self, batch, grad_params, rng):
         is_discrete = self.config['is_discrete']
         q_name = 'q' if is_discrete else 'critic'
@@ -224,10 +209,9 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
             )
             next_actions = jnp.reshape(next_actions, (t, b, n))
 
-            # DQN target: get all Q values, then index by selected action
-            next_q_all = self.network.select(target_q_name)(batch['observations'][1:])  # (ensemble, t, b, n, A)
-            next_q_all = next_q_all.min(axis=0) if self.config.get('q_agg', 'mean') == 'min' else next_q_all.mean(axis=0)  # (t, b, n, A)
-            next_q = jnp.take_along_axis(next_q_all, next_actions[..., None], axis=-1).squeeze(-1)  # (t, b, n)
+            next_q_all = self.network.select(target_q_name)(batch['observations'][1:])
+            next_q_all = next_q_all.min(axis=0) if self.config.get('q_agg', 'mean') == 'min' else next_q_all.mean(axis=0)
+            next_q = jnp.take_along_axis(next_q_all, next_actions[..., None], axis=-1).squeeze(-1)
         else:
             next_actions = self._vgf_select(
                 obs_rep, particles, mode=self.config['train_particle_select'], module=target_q_name,
@@ -246,14 +230,20 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
             target_q = jnp.clip(target_q, -q_clip_val, q_clip_val)
 
         if is_discrete:
-            # DQN current: get all Q values, then index by taken action
-            q_all = self.network.select(q_name)(batch['observations'][:-1], params=grad_params)  # (ensemble, t, b, n, A)
-            cur_actions = batch['actions'][:-1]  # (t, b, n) integers
-            q_ens = jnp.take_along_axis(q_all, cur_actions[None, ..., None], axis=-1).squeeze(-1)  # (ensemble, t, b, n)
+            q_all = self.network.select(q_name)(batch['observations'][:-1], params=grad_params)
+            cur_actions = batch['actions'][:-1]
+            q_ens = jnp.take_along_axis(q_all, cur_actions[None, ..., None], axis=-1).squeeze(-1)
 
             q_cur = q_ens.min(axis=0) if self.config.get('q_agg', 'mean') == 'min' else q_ens.mean(axis=0)
-            mixed_target_q = jnp.sum(target_q, axis=-1)
-            mixed_q = jnp.sum(q_cur, axis=-1)
+            if self.config.get('decompose_q', 'vdn') == 'mixer':
+                states = batch['states']
+                mixed_target_q = self.network.select('target_q_mixer')(
+                    states[1:], target_q).squeeze(-1)
+                mixed_q = self.network.select('q_mixer')(
+                    states[:-1], q_cur, params=grad_params).squeeze(-1)
+            else:
+                mixed_target_q = jnp.sum(target_q, axis=-1)
+                mixed_q = jnp.sum(q_cur, axis=-1)
 
             mu_y = jax.lax.stop_gradient(jnp.mean(mixed_target_q))
             abs_diff = jnp.abs(mixed_target_q - mu_y)
@@ -354,7 +344,8 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
         return joint_bc_loss, {'joint_bc_flow_loss': joint_bc_loss}
 
     @jax.jit
-    def total_loss(self, batch, grad_params, rng=None):
+    def total_loss(self, batch_in, grad_params, rng=None):
+        batch = batch_in
         info = {}
         rng = self.rng if rng is None else rng
         rng, actor_rng, critic_rng = jax.random.split(rng, 3)
@@ -385,6 +376,8 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
             'rewards': rewards_t,
             'terminals': terminals_t,
         }
+        if self.config.get('decompose_q', 'vdn') == 'mixer':
+            batch['states'] = switch_two_leading_dims(batch_in['infos']['state'])
 
         critic_loss, critic_info = self.critic_loss(batch, grad_params, critic_rng)
         for k, v in critic_info.items():
@@ -439,9 +432,11 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
         else:
             self.target_update(new_network, target_name)
 
+        if self.config['is_discrete'] and self.config.get('decompose_q', 'vdn') == 'mixer':
+            self.target_update(new_network, 'q_mixer')
+
         return self.replace(network=new_network, rng=new_rng), info
 
-    # -------------------- Action Sampling (Evaluation) -------------------- #
     def _masked_softmax(self, logits, mask=None):
         if mask is None:
             return jax.nn.softmax(logits, axis=-1)
@@ -495,7 +490,7 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
         actions = self._vgf_select(obs_rep, particles, mode=self.config['eval_particle_select'], module='q', legal_masks=masks)
         return {agent: actions[i] for i, agent in enumerate(self.agent_names)}, new_carry
 
-    @jax.jit
+    @functools.partial(jax.jit, static_argnames=('eval_vgf_steps', 'stochastic'))
     def sample_actions(self, observations: Dict[str, jnp.ndarray], seed, legal_actions=None, eval_vgf_steps=None, temperature=0.0, stochastic=False):
         if self.config['is_discrete']:
             actions, _ = self.sample_actions_with_carry(
@@ -520,7 +515,6 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
             actions = jnp.clip(actions, -1, 1)
             return {agent: actions[i] for i, agent in enumerate(self.agent_names)}
 
-    # -------------------- Flow Integration (lax.scan) -------------------- #
     @jax.jit
     def compute_flow_logits(self, observations, noises, is_encoded=False):
         if (self.config['encoder'] is not None) and (not self.config.get('use_lstm', False)) and (not is_encoded):
@@ -554,7 +548,6 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
         actions, _ = jax.lax.scan(scan_body, noises, jnp.arange(flow_steps))
         return jnp.clip(actions, -1, 1)
 
-    # -------------------- Factory -------------------- #
     @classmethod
     def create(cls, seed, ex_observations, ex_actions, agent_names, config):
         rng = jax.random.PRNGKey(seed)
@@ -584,7 +577,6 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
                 encoders['critic'] = encoder_module()
                 encoders['actor_bc'] = encoder_module()
 
-        # DQN for discrete (obs -> all Q values), Value for continuous
         if is_discrete:
             q_def = DQN(
                 hidden_dims=config.get('value_hidden_dims', config.get('critic_hidden_dims', (256, 256, 256, 256))),
@@ -623,7 +615,6 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
             ex_times = ex_actions[..., :1]
             ex_obs_init = ex_obs_with_id
 
-        # DQN init: only obs (no actions needed)
         if is_discrete:
             network_info = dict(
                 **{q_key: (q_def, (ex_obs_init,))},
@@ -636,6 +627,22 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
                 **{target_q_key: (copy.deepcopy(q_def), (ex_obs_init, ex_actions))},
                 **{actor_bc_key: (actor_bc_def, (ex_obs_init, ex_actions, ex_times))},
             )
+
+        if is_discrete and config.get('decompose_q', 'vdn') == 'mixer':
+            n_agents = len(agent_names)
+            state_dim = int(config['state_dim'])
+            mixer_def = QMixer(
+                state_dim=state_dim,
+                n_agents=n_agents,
+                embed_dim=int(config.get('mixer_embed_dim', 32)),
+                hypernet_embed=int(config.get('mixer_hypernet_embed', 64)),
+                layer_norm=config.get('mixer_layer_norm', True),
+                non_monotonic=config.get('mixer_non_monotonic', False),
+            )
+            ex_states = jnp.zeros((*ex_observations.shape[:2], state_dim), dtype=jnp.float32)
+            ex_agent_qs = jnp.zeros(ex_observations.shape[:3], dtype=jnp.float32)
+            network_info['q_mixer'] = (mixer_def, (ex_states, ex_agent_qs))
+            network_info['target_q_mixer'] = (copy.deepcopy(mixer_def), (ex_states, ex_agent_qs))
 
         if config.get('joint_flow_bc', False):
             n_agents = len(agent_names)
@@ -723,11 +730,7 @@ class ScoutEfficientAgent(flax.struct.PyTreeNode):
         )
 
 
-def get_config(variant=None):
-    if variant == 'v1':
-        return _get_v1_config()
-    if variant == 'v2':
-        return _get_v2_config()
+def get_config():
     return ml_collections.ConfigDict(
         dict(
             agent_name='scout_eff',
@@ -762,6 +765,12 @@ def get_config(variant=None):
             lvc_temperature=1.0,
             lvc_label_smoothing=0.1,
             joint_flow_bc=False,
+            decompose_q='vdn',
+            mixer_embed_dim=32,
+            mixer_hypernet_embed=64,
+            mixer_layer_norm=True,
+            mixer_non_monotonic=False,
+            state_dim=0,
             target_reset_interval=0,
             lr_schedule='constant',
             lr_warmup_steps=0,
@@ -774,29 +783,3 @@ def get_config(variant=None):
             lstm_layer_norm=True,
         )
     )
-
-
-def _get_v1_config():
-    config = get_config()
-    config.agent_name = 'scout_eff_v1'
-    config.train_vgf_steps = 3
-    config.vgf_lr = 1e-3
-    config.vgf_bc_reg = 0.1
-    config.vgf_grad_clip = 1.0
-    config.lvc_coef = 0.5
-    config.max_grad_norm = 1.0
-    return config
-
-
-def _get_v2_config():
-    config = get_config()
-    config.agent_name = 'scout_eff_v2'
-    config.train_vgf_steps = 1
-    config.vgf_lr = 3e-3
-    config.vgf_bc_reg = 0.05
-    config.vgf_grad_clip = 1.0
-    config.lvc_coef = 0.0
-    config.lr_schedule = 'cosine'
-    config.lr_warmup_steps = 5000
-    config.max_grad_norm = 1.0
-    return config

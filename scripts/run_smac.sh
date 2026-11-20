@@ -27,7 +27,3 @@ for scenario in $scenarios; do
     done
   done
 done
-
-# \
-#        --agent.train_vgf_steps 0 \
-#        --agent.vgf_particles 10 \

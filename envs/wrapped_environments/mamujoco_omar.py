@@ -9,8 +9,6 @@ from envs.wrapped_environments.base import BaseEnvironment, ResetReturn, StepRet
 
 class MAMuJoCo(BaseEnvironment):
 
-    """Environment wrapper Multi-Agent MuJoCo."""
-
     def __init__(self, scenario: str, seed=None):
         env_args = self._get_mamujoco_args(scenario)
 
@@ -70,7 +68,6 @@ class MAMuJoCo(BaseEnvironment):
         return observations, rewards, terminals, trunctations, info  # type: ignore
 
     def __getattr__(self, name: str) -> Any:
-        """Expose any other attributes of the underlying environment."""
         if hasattr(self.__class__, name):
             return self.__getattribute__(name)
         else:

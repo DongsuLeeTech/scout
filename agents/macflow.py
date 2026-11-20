@@ -14,24 +14,17 @@ from util import *
 
 
 class MACFlowAgent(flax.struct.PyTreeNode):
-    """Unified MACFlow agent supporting both discrete and continuous actions.
-
-    Set config['is_discrete'] = True for discrete (SMAC-style) environments
-    or False for continuous (MAMuJoCo-style) environments.
-    """
     rng: Any
     network: Any
     agent_names: Sequence[str] = nonpytree_field()
     config: Any = nonpytree_field()
 
-    # -------------------- Time Embedding (discrete only) -------------------- #
     def _time_sin_embed(self, ts):
         kfreq = int(self.config.get('t_embed_frequencies', 8))
         freqs = jnp.asarray([2 ** i for i in range(kfreq)], dtype=ts.dtype) * jnp.pi
         ang = ts * freqs
         return jnp.concatenate([jnp.sin(ang), jnp.cos(ang)], axis=-1)
 
-    # -------------------- Critic Loss -------------------- #
     def critic_loss(self, batch, grad_params, rng):
         is_discrete = self.config['is_discrete']
         q_name = 'q' if is_discrete else 'critic'
@@ -81,7 +74,6 @@ class MACFlowAgent(flax.struct.PyTreeNode):
             'q_min': mixed_q.min(),
         }
 
-    # -------------------- Actor Loss -------------------- #
     def actor_loss(self, batch, grad_params, rng):
         is_discrete = self.config['is_discrete']
         q_name = 'q' if is_discrete else 'critic'
@@ -99,9 +91,8 @@ class MACFlowAgent(flax.struct.PyTreeNode):
             x_t = (1 - t_scalar) * x_0 + t_scalar * x_1
             vel = x_1 - x_0
 
-            t_embed = self._time_sin_embed(t_scalar)
             pred = self.network.select('actor_bc_flow')(
-                obs_slice, x_t, t_embed, params=grad_params,
+                obs_slice, x_t, t_scalar, params=grad_params,
                 is_encoded=self.config.get('use_lstm', False),
             )
         else:
@@ -116,7 +107,6 @@ class MACFlowAgent(flax.struct.PyTreeNode):
 
         bc_flow_loss = jnp.mean((pred - vel) ** 2)
 
-        # Distillation loss
         rng, noise_rng = jax.random.split(rng)
         if is_discrete:
             noises = jax.random.normal(noise_rng, (*x_1.shape[:-1], action_dim))
@@ -135,7 +125,6 @@ class MACFlowAgent(flax.struct.PyTreeNode):
             actor_actions = self.network.select('actor_onestep_flow')(obs_slice, noises, params=grad_params)
             distill_loss = jnp.mean((actor_actions - target_flow_actions) ** 2)
 
-        # Q-guidance loss
         if is_discrete:
             actor_actions_idx = jnp.argmax(actor_logits, axis=-1)
             actor_actions_oh = jax.nn.one_hot(actor_actions_idx, action_dim)
@@ -232,7 +221,6 @@ class MACFlowAgent(flax.struct.PyTreeNode):
 
         return self.replace(network=new_network, rng=new_rng), info
 
-    # -------------------- Helpers (discrete) -------------------- #
     def _masked_softmax(self, logits, mask=None):
         if mask is None:
             return jax.nn.softmax(logits, axis=-1)
@@ -242,7 +230,6 @@ class MACFlowAgent(flax.struct.PyTreeNode):
 
     @jax.jit
     def _sample_actions_train(self, observations, seed=None, temperature=1.0):
-        """Sample discrete actions from onestep flow during training."""
         seed = self.rng if seed is None else seed
         action_seed, _ = jax.random.split(seed)
         noises = jax.random.normal(action_seed, (*observations.shape[:3], self.config['action_dim']))
@@ -255,13 +242,11 @@ class MACFlowAgent(flax.struct.PyTreeNode):
 
     @jax.jit
     def sample_actions_batch(self, observations, seed=None, temperature=1.0):
-        """Sample continuous actions from onestep flow (for batch observations)."""
         action_seed, _ = jax.random.split(seed)
         noises = jax.random.normal(action_seed, (*observations.shape[:3], self.config['action_dim']))
         actions = self.network.select('actor_onestep_flow')(observations, noises)
         return jnp.clip(actions, -1, 1)
 
-    # -------------------- Action Sampling (Evaluation) -------------------- #
     def sample_actions_with_carry(self,
                                   observations: Dict[str, jnp.ndarray],
                                   carry,
@@ -271,7 +256,6 @@ class MACFlowAgent(flax.struct.PyTreeNode):
                                   temperature: float = 0.0,
                                   stochastic: bool = False,
                                   **kwargs):
-        """Sample actions with carry for discrete evaluation (LSTM support)."""
         rng = seed if seed is not None else self.rng
         action_seed, _ = jax.random.split(rng)
         N = len(self.agent_names)
@@ -309,11 +293,6 @@ class MACFlowAgent(flax.struct.PyTreeNode):
 
     @jax.jit
     def sample_actions(self, observations, seed, legal_actions=None, temperature=0.0, stochastic=False, **kwargs):
-        """Sample actions for evaluation.
-
-        For discrete: observations is Dict[str, ndarray], returns Dict[str, int].
-        For continuous: observations is Dict[str, ndarray], returns Dict[str, ndarray].
-        """
         if self.config['is_discrete']:
             actions, _ = self.sample_actions_with_carry(
                 observations, carry=None, seed=seed,
@@ -336,14 +315,8 @@ class MACFlowAgent(flax.struct.PyTreeNode):
                 actions = self.network.select('actor_onestep_flow')(observations, noises)
                 return jnp.clip(actions, -1, 1)
 
-    # -------------------- Flow Integration -------------------- #
     @jax.jit
     def compute_flow_actions(self, observations, noises, is_encoded=False):
-        """Compute actions via multi-step flow integration.
-
-        For discrete: returns integer action indices.
-        For continuous: returns clipped continuous actions.
-        """
         is_discrete = self.config['is_discrete']
 
         if is_discrete:
@@ -353,8 +326,7 @@ class MACFlowAgent(flax.struct.PyTreeNode):
 
             def body(actions, i):
                 t_scalar = jnp.full((*observations.shape[:-1], 1), i / steps)
-                t_embed = self._time_sin_embed(t_scalar)
-                vels = self.network.select('actor_bc_flow')(observations, actions, t_embed, is_encoded=True)
+                vels = self.network.select('actor_bc_flow')(observations, actions, t_scalar, is_encoded=True)
                 actions = actions + vels / steps
                 return actions, None
 
@@ -370,7 +342,6 @@ class MACFlowAgent(flax.struct.PyTreeNode):
                 actions = actions + vels / self.config['flow_steps']
             return jnp.clip(actions, -1, 1)
 
-    # -------------------- Factory -------------------- #
     @classmethod
     def create(cls, seed, ex_observations, ex_actions, agent_names, config):
         rng = jax.random.PRNGKey(seed)
@@ -422,8 +393,7 @@ class MACFlowAgent(flax.struct.PyTreeNode):
         ex_obs_with_id = batch_concat_agent_id_to_obs(ex_observations)
 
         if is_discrete:
-            kfreq = int(config.get('t_embed_frequencies', 8))
-            ex_times = jnp.zeros((*ex_actions.shape[:-1], 2 * kfreq), dtype=jnp.float32)
+            ex_times = jnp.zeros((*ex_actions.shape[:-1], 1), dtype=jnp.float32)
 
             if config.get('use_lstm', False):
                 enc_feat_dim = int(config.get('lstm_hidden_dim', 256))
@@ -501,7 +471,6 @@ def get_config():
             flow_steps=10,
             normalize_q_loss=False,
             encoder=ml_collections.config_dict.placeholder(str),
-            # Discrete-only options
             t_embed_frequencies=8,
             use_lstm=False,
             lstm_hidden_dim=64,

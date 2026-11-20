@@ -16,7 +16,6 @@ def get_all_vaults(
     vault_uids: Optional[list[str]] = None,
     rel_dir: str = "vaults",
 ) -> list[Vault]:
-    """Gets a list of Vaults from the specified directory. Each uid produces one Vault."""
     if vault_uids is None:
         vault_uids = get_available_uids(f"./{rel_dir}/{vault_name}")
 
@@ -27,16 +26,13 @@ def get_all_vaults(
 
 
 def stitch_vault_from_many(vlts: list[Vault], vault_name: str, vault_uid: str, rel_dir: str) -> int:
-    """Given a list of vaults, writes all experience in each of them to one new vault."""
     all_data = vlts[0].read()
     offline_data = all_data.experience
 
     dest_buffer = fbx.make_trajectory_buffer(
-        # Sampling parameters
         sample_batch_size=1,
         sample_sequence_length=1,
         period=1,
-        # Not important in this example, as we are not adding to the buffer
         max_length_time_axis=offline_data["actions"].shape[1] + 1,
         min_length_time_axis=100,
         add_batch_size=offline_data["actions"].shape[0],
@@ -72,26 +68,17 @@ def stitch_vault_from_many(vlts: list[Vault], vault_name: str, vault_uid: str, r
 
 
 def combine_vaults(rel_dir: str, vault_name: str, vault_uids: Optional[list[str]] = None) -> str:
-    """Combines datasets in a vault.
-
-    Takes multiple datasets in a vault and combines them into one new vault
-    with added "_combined" in the name.
-    """
-    # check that the vault to be combined exists
     if not check_directory_exists_and_not_empty(f"./{rel_dir}/{vault_name}"):
         print(f"Vault './{rel_dir}/{vault_name}' does not exist and cannot be combined.")
         return f"./{rel_dir}/{vault_name}"
 
-    # if uids aren't specified, use all uids for subsampling
     if vault_uids is None:
         vault_uids = get_available_uids(f"./{rel_dir}/{vault_name}")
 
-    # name of subsampled vault (at task level)
     print(vault_uids)
     uids_str = "_".join(vault_uids)
     new_vault_name = vault_name.removesuffix(".vlt") + "_combined.vlt"
 
-    # check that a subsampled vault by the same name does not already exist
     if check_directory_exists_and_not_empty(f"./{rel_dir}/{new_vault_name}"):
         print(
             f"Vault '{rel_dir}/{new_vault_name.removesuffix('.vlt')}' already exists. To combine from scratch, please remove the current combined vault from its directory."  # noqa

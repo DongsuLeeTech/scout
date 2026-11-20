@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Wrapper for SMACv2."""
 from typing import Dict, List
 
 import numpy as np
@@ -86,8 +85,6 @@ MAP_NAMES = {
 
 class SMACv2(BaseEnvironment):
 
-    """Environment wrapper SMAC."""
-
     def __init__(self, scenario: str, seed: int):
         self._environment = StarCraftCapabilityEnvWrapper(
             capability_config=DISTRIBUTION_CONFIGS[scenario],
@@ -105,12 +102,9 @@ class SMACv2(BaseEnvironment):
         self.num_actions = self._environment.n_actions
 
     def reset(self) -> ResetReturn:
-        """Resets the env."""
-        # Reset the environment
         self._environment.reset()
         self._done = False
 
-        # Get observation from env
         observations = self._environment.get_obs()
         observations = {agent: observations[i] for i, agent in enumerate(self.agents)}
 
@@ -124,16 +118,12 @@ class SMACv2(BaseEnvironment):
         return observations, info
 
     def step(self, actions: Dict[str, np.ndarray]) -> StepReturn:
-        """Step in env."""
-        # Convert dict of actions to list for SMAC
         smac_actions = []
         for agent in self.agents:
             smac_actions.append(actions[agent])
 
-        # Step the SMAC environment
-        reward, done, _ = self._environment.step(smac_actions)
+        reward, done, env_info = self._environment.step(smac_actions)
 
-        # Get the next observations
         observations = self._environment.get_obs()
         observations = {agent: observations[i] for i, agent in enumerate(self.agents)}
 
@@ -142,18 +132,18 @@ class SMACv2(BaseEnvironment):
 
         env_state = self._environment.get_state().astype("float32")
 
-        # Convert team reward to agent-wise rewards
         rewards = {agent: np.array(reward, "float32") for agent in self.agents}
 
         terminals = {agent: np.array(done) for agent in self.agents}
         truncations = {agent: np.array(False) for agent in self.agents}
 
         info = {"legals": legals, "state": env_state}
+        if isinstance(env_info, dict) and env_info.get("battle_won", False):
+            info["battle_won"] = True
 
         return observations, rewards, terminals, truncations, info
 
     def _get_legal_actions(self) -> List[np.ndarray]:
-        """Get legal actions from the environment."""
         legal_actions = []
         for i, _ in enumerate(self.agents):
             legal_actions.append(
@@ -162,7 +152,6 @@ class SMACv2(BaseEnvironment):
         return legal_actions
 
     def render(self, mode: str = "rgb_array"):
-        """Delegate rendering to underlying SMAC env if available."""
         if hasattr(self._environment, "render"):
             try:
                 return self._environment.render(mode=mode)
@@ -171,13 +160,11 @@ class SMACv2(BaseEnvironment):
         return None
 
     def save_replay(self, path: str):
-        """Save replay via underlying SMAC env if supported."""
         if hasattr(self._environment, "save_replay"):
             return self._environment.save_replay(path)
         return None
 
     def render(self, mode: str = "rgb_array"):
-        """Delegate rendering to underlying SMAC env if available."""
         if hasattr(self._environment, "render"):
             try:
                 return self._environment.render(mode=mode)

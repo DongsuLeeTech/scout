@@ -27,14 +27,12 @@ class FlashbaxReplayBuffer:
         self._max_size = max_size
         self._batch_size = batch_size
 
-        # Vault
         self._store_to_vault = store_to_vault
         self._vault_name = vault_name
         self._write_to_vault_every = max_size - 10
         self._vault_has_initialised = False
         self._step_count = 0
 
-        # Flashbax buffer
         self._replay_buffer = fbx.make_trajectory_buffer(
             add_batch_size=1,
             sample_batch_size=batch_size,
@@ -79,17 +77,31 @@ class FlashbaxReplayBuffer:
         if self._buffer_state is None:
             self._buffer_state = self._replay_buffer.init(timestep)
 
-            # Log stuff to vault/flashbax
             if not self._vault_has_initialised and self._store_to_vault:
                 self._vault = Vault(
                     vault_name=self._vault_name,
                     experience_structure=self._buffer_state.experience,
                 )
                 self._vault_has_initialised = True
+        else:
+            ref = self._buffer_state.experience
+            ref_infos = ref.get("infos", {}) if isinstance(ref, dict) else {}
+            aligned_infos = {}
+            for key, ref_val in ref_infos.items():
+                if key in timestep["infos"]:
+                    val = timestep["infos"][key]
+                else:
+                    sample_shape = ref_val.shape[2:] if ref_val.ndim >= 2 else ()
+                    val = np.zeros(sample_shape, dtype=ref_val.dtype)
+                aligned_infos[key] = np.asarray(val).astype(ref_val.dtype, copy=False)
+            timestep["infos"] = aligned_infos
+            for key in ("observations", "actions", "rewards", "terminals", "truncations"):
+                if key in ref:
+                    timestep[key] = np.asarray(timestep[key]).astype(ref[key].dtype, copy=False)
 
         timestep = tree.map_structure(
             lambda x: jnp.expand_dims(jnp.expand_dims(jnp.array(x), 0), 0), timestep
-        )  # add batch & time dims
+        )
 
         self._buffer_state = self._buffer_add_fn(self._buffer_state, timestep)
 
@@ -117,7 +129,6 @@ class FlashbaxReplayBuffer:
             rel_dir=rel_dir,
         ).read()
 
-        # Recreate the buffer and associated pure functions
         self._replay_buffer = fbx.make_trajectory_buffer(
             add_batch_size=1,
             sample_batch_size=self._batch_size,
@@ -127,6 +138,6 @@ class FlashbaxReplayBuffer:
             max_size=self._sequence_length,
         )
         self._buffer_sample_fn = jax.jit(self._replay_buffer.sample)
-        self._buffer_add_fn = jax.jit(self._replay_buffer.add)
+        self._buffer_add_fn = jax.jit(self._replay_buffer.add, donate_argnums=[0])
 
         return True

@@ -8,7 +8,6 @@ from utils.networks import MLP
 
 
 class ResnetStack(nn.Module):
-    """ResNet stack module."""
 
     num_features: int
     num_blocks: int
@@ -58,7 +57,6 @@ class ResnetStack(nn.Module):
 
 
 class ImpalaEncoder(nn.Module):
-    """IMPALA encoder."""
 
     width: int = 1
     stack_sizes: tuple = (16, 32, 32)

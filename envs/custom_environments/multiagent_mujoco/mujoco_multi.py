@@ -7,7 +7,6 @@ from .multiagentenv import MultiAgentEnv
 from .obsk import get_joints_at_kdist, get_parts_and_edges, build_obs
 
 
-# using code from https://github.com/ikostrikov/pytorch-ddpg-naf
 class NormalizedActions(gym.ActionWrapper):
     def _action(self, action):
         action = (action + 1) / 2
@@ -17,11 +16,6 @@ class NormalizedActions(gym.ActionWrapper):
 
     def action(self, action_):
         return self._action(action_)
-
-        # orig_action = copy.deepcopy(action_)
-        # normalized_action = self._action(action_)
-        # print ('action: {}, normalized_action: {}'.format(orig_action, normalized_action))
-        # return normalized_action
 
     def _reverse_action(self, action):
         action -= self.action_space.low
@@ -33,8 +27,8 @@ class NormalizedActions(gym.ActionWrapper):
 class MujocoMulti(MultiAgentEnv):
     def __init__(self, batch_size=None, **kwargs):
         super().__init__(batch_size, **kwargs)
-        self.scenario = kwargs["env_args"]["scenario"]  # e.g. Ant-v2
-        self.agent_conf = kwargs["env_args"]["agent_conf"]  # e.g. '2x3'
+        self.scenario = kwargs["env_args"]["scenario"]
+        self.agent_conf = kwargs["env_args"]["agent_conf"]
 
         self.agent_partitions, self.mujoco_edges, self.mujoco_globals = get_parts_and_edges(
             self.scenario, self.agent_conf
@@ -46,10 +40,10 @@ class MujocoMulti(MultiAgentEnv):
 
         self.agent_obsk = kwargs["env_args"].get(
             "agent_obsk", None
-        )  # if None, fully observable else k>=0 implies observe nearest k agents or joints
+        )
         self.agent_obsk_agents = kwargs["env_args"].get(
             "agent_obsk_agents", False
-        )  # observe full k nearest agents (True) or just single joints (False)
+        )
 
         if self.agent_obsk is not None:
             self.k_categories_label = kwargs["env_args"].get("k_categories")
@@ -90,7 +84,6 @@ class MujocoMulti(MultiAgentEnv):
                 for agent_id in range(self.n_agents)
             ]
 
-        # load scenario from script
         self.episode_limit = self.args.episode_limit
 
         self.env_version = kwargs["env_args"].get("env_version", 2)
@@ -104,7 +97,6 @@ class MujocoMulti(MultiAgentEnv):
         self.timelimit_env.reset()
         self.obs_size = self.get_obs_size()
 
-        # COMPATIBILITY
         self.n = self.n_agents
         self.observation_space = [
             Box(low=np.array([-10] * self.n_agents), high=np.array([10] * self.n_agents))
@@ -124,14 +116,9 @@ class MujocoMulti(MultiAgentEnv):
         pass
 
     def step(self, actions):
-        # need to remove dummy actions that arise due to unequal action vector sizes across agents
         flat_actions = np.concatenate(
             [actions[i][: self.action_space[i].low.shape[0]] for i in range(self.n_agents)]
         )
-
-        # print ('flat_actions: {}'.format(flat_actions))
-        # for agent_idx in range(len(actions)):
-        #     print ('action [{}]: {} (end={}, len={})'.format(agent_idx, actions[agent_idx], self.action_space[agent_idx].low.shape[0], len(actions[agent_idx])))
 
         obs_n, reward_n, done_n, info_n = self.wrapped_env.step(flat_actions)
         self.steps += 1
@@ -141,14 +128,13 @@ class MujocoMulti(MultiAgentEnv):
 
         if done_n:
             if self.steps < self.episode_limit:
-                info["episode_limit"] = False  # the next state will be masked out
+                info["episode_limit"] = False
             else:
-                info["episode_limit"] = True  # the next state will not be masked out
+                info["episode_limit"] = True
 
         return reward_n, done_n, info
 
     def get_obs(self):
-        """Returns all agent observat3ions in a list"""
         obs_n = []
         for a in range(self.n_agents):
             obs_n.append(self.get_obs_agent(a))
@@ -168,21 +154,18 @@ class MujocoMulti(MultiAgentEnv):
             )
 
     def get_obs_size(self):
-        """Returns the shape of the observation"""
         if self.agent_obsk is None:
             return self.get_obs_agent(0).size
         else:
             return max([len(self.get_obs_agent(agent_id)) for agent_id in range(self.n_agents)])
 
     def get_state(self, team=None):
-        # TODO: May want global states for different teams (so cannot see what the other team is communicating e.g.)
         return self.env._get_obs()
 
     def get_state_size(self):
-        """Returns the shape of the state"""
         return len(self.get_state())
 
-    def get_avail_actions(self):  # all actions are always available
+    def get_avail_actions(self):
         return np.ones(
             shape=(
                 self.n_agents,
@@ -191,23 +174,18 @@ class MujocoMulti(MultiAgentEnv):
         )
 
     def get_avail_agent_actions(self, agent_id):
-        """Returns the available actions for agent_id"""
         return np.ones(shape=(self.n_actions,))
 
     def get_total_actions(self):
-        """Returns the total number of actions an agent could ever take"""
-        return self.n_actions  # CAREFUL! - for continuous dims, this is action space dim rather
-        # return self.env.action_space.shape[0]
+        return self.n_actions
 
     def get_stats(self):
         return {}
 
-    # TODO: Temp hack
     def get_agg_stats(self, stats):
         return {}
 
     def reset(self, **kwargs):
-        """Returns initial observations and states"""
         self.steps = 0
         self.timelimit_env.reset()
         return self.get_obs()

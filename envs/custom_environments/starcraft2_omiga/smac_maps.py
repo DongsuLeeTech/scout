@@ -221,7 +221,6 @@ map_param_registry = {
         "unit_type_bits": 0,
         "map_type": "colossus",
     },
-    # This is adhoc environment
     "1c2z_vs_1c1s1z": {
         "n_agents": 3,
         "n_enemies": 3,

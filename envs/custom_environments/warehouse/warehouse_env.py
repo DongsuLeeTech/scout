@@ -13,7 +13,6 @@ from .reward_calculator import RewardCalculator
 
 
 class FlattenObservation(ObservationWrapper):
-    r"""Observation wrapper that flattens the observation of individual agents."""
 
     def __init__(self, env):
         super(FlattenObservation, self).__init__(env)
@@ -70,7 +69,6 @@ class WareHouseEnv(MultiAgentEnv):
 
         agent_id_offset = int(self.add_agent_id) * self.n_agents
 
-        # create shape
         self._env.reset()
 
         self.observation_space = [
@@ -90,12 +88,10 @@ class WareHouseEnv(MultiAgentEnv):
             self._env.observation_space, key=lambda x: x.shape
         )
 
-        # add for randomizing
         self.agent_permutation = None
         self.agent_recovery = None
 
     def reset(self):
-        """ Returns initial observations and states"""
         obs_dicts = self._env.reset()
         self._obs = obs_dicts
 
@@ -115,9 +111,7 @@ class WareHouseEnv(MultiAgentEnv):
         return obs, shared_obs, {"avail_actions": avail}
 
     def step(self, actions, t=0):
-        """ Returns reward, terminated, info """
         actions_int = [int(a) for a in actions]
-        # add for randomizing
 
         o, rewards, done, infos = self._env.step(actions_int)
         obs = []
@@ -156,15 +150,12 @@ class WareHouseEnv(MultiAgentEnv):
         self._env.close()
 
     def get_obs(self):
-        """Returns all agent observations in a list."""
         pass
 
     def get_obs_agent(self, agent_id):
-        """Returns observation for agent_id."""
         pass
 
     def get_obs_size(self):
-        """Returns the size of the observation."""
         return self.observation_space[0].shape[0]
 
     def get_shared_obs(self):
@@ -175,31 +166,24 @@ class WareHouseEnv(MultiAgentEnv):
         return shared_obs
 
     def get_state(self):
-        """Returns the global state."""
         pass
 
     def get_state_size(self):
-        """Returns the size of the global state."""
         return self.share_observation_space[0].shape[0]
 
     def get_avail_actions(self, info=None):
-        """Returns the available actions of all agents in a list. Only used internally"""
         pass
 
     def get_avail_agent_actions(self, agent_id):
-        """Returns the available actions for agent_id."""
         return [1] * self.num_actions[0]
 
     def get_total_actions(self):
-        """Returns the total number of actions an agent could ever take."""
         return self.num_actions[0]
 
     def save_replay(self):
-        """Save a replay."""
         pass
 
     def render(self):
-        """Save a replay."""
         pass
 
     def get_env_info(self):

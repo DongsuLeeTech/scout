@@ -77,7 +77,6 @@ class Flatland(BaseEnvironment):
             predictor=ShortestPathPredictorForRailEnv(max_depth=20),
         )
 
-        # Initialize the properties of the environment
         self._environment = RailEnv(
             width=self._map_width,
             height=self._map_height,
@@ -103,7 +102,6 @@ class Flatland(BaseEnvironment):
 
 
     def render(self) -> Any:
-        """Return frame for rendering"""
         return self._environment.render()
 
     def reset(self) -> ResetReturn:
@@ -124,25 +122,19 @@ class Flatland(BaseEnvironment):
     def step(self, actions: Dict[str, np.ndarray]) -> StepReturn:
         actions = {int(agent): action.item() for agent, action in actions.items()}
 
-        # Step the Flatland environment
         next_observations, all_rewards, all_dones, info = self._environment.step(actions)
 
-        # Team done flag
         self._done = all(list(all_dones.values()))
 
-        # Rewards
         rewards = {
             agent: np.array(all_rewards[int(agent)], dtype="float32")
             for agent in self.agents
         }
 
-        # Legal actions
         legal_actions = self._get_legal_actions()
 
-        # Observations
         next_observations = self._convert_observations(next_observations, info)
 
-        # Make extras
         state = self._make_state_representation()
 
         info = {"state": state, "legals": legal_actions}
@@ -166,7 +158,7 @@ class Flatland(BaseEnvironment):
                 flatland_agent
             ):
                 legals = np.zeros(self.num_actions, "float32")
-                legals[0] = 1  # can only do nothng
+                legals[0] = 1
             else:
                 legals = np.ones(5, "float32")
 
@@ -184,7 +176,7 @@ class Flatland(BaseEnvironment):
             if pos is None:
                 pos = (-1, -1)
             if agent.state == 7:
-                pos = agent.target  # agent is done
+                pos = agent.target
 
             state.append(np.array(pos, "float32"))
 
@@ -206,7 +198,7 @@ class Flatland(BaseEnvironment):
                 observations[agent_id],
                 tree_depth=self._tree_depth,
             )
-            state = info["state"][agent_id]  # train state
+            state = info["state"][agent_id]
             one_hot_state = np.zeros((7,), "float32")
             one_hot_state[state] = 1
             obs = np.concatenate([one_hot_state, norm_observation], axis=-1)
@@ -214,15 +206,7 @@ class Flatland(BaseEnvironment):
         return new_observations
 
 
-### RailEnv Wrappers from: https://gitlab.aicrowd.com/flatland/flatland/-/blob/master/flatland/contrib/wrappers/flatland_wrappers.py
-
-
 def find_all_cells_where_agent_can_choose(env: RailEnv):  # type: ignore
-    """input: a RailEnv (or something which behaves similarly, e.g. a wrapped RailEnv),
-
-    WHICH HAS BEEN RESET ALREADY!
-    (o.w., we call env.rail, which is None before reset(), and crash.)
-    """
     switches = []
     switches_neighbors = []
     directions = list(range(4))
@@ -231,7 +215,6 @@ def find_all_cells_where_agent_can_choose(env: RailEnv):  # type: ignore
             pos = (h, w)
 
             is_switch = False
-            # Check for switch: if there is more than one outgoing transition
             for orientation in directions:
                 possible_transitions = env.rail.get_transitions(*pos, orientation)
                 num_transitions = np.count_nonzero(possible_transitions)
@@ -240,7 +223,6 @@ def find_all_cells_where_agent_can_choose(env: RailEnv):  # type: ignore
                     is_switch = True
                     break
             if is_switch:
-                # Add all neighbouring rails, if pos is a switch
                 for orientation in directions:
                     possible_transitions = env.rail.get_transitions(*pos, orientation)
                     for movement in directions:
@@ -251,19 +233,7 @@ def find_all_cells_where_agent_can_choose(env: RailEnv):  # type: ignore
     return tuple(map(set, (switches, switches_neighbors, decision_cells)))
 
 
-# The block of code below is obtained from the flatland starter-kit
-# at https://gitlab.aicrowd.com/flatland/flatland-starter-kit/-/blob/master/
-# utils/observation_utils.py
-# this is done just to obtain the normalize_observation function that would
-# serve as the default preprocessor for the Tree obs builder.
-
-
 def max_lt(seq: np.ndarray, val: Any) -> Any:  # type: ignore
-    """Get max in sequence.
-
-    Return greatest item in seq for which item < val applies.
-    None is returned if seq was empty or all items in seq were >= val.
-    """
     max_val = 0
     idx = len(seq) - 1
     while idx >= 0:
@@ -274,11 +244,6 @@ def max_lt(seq: np.ndarray, val: Any) -> Any:  # type: ignore
 
 
 def min_gt(seq: np.ndarray, val: Any) -> Any:  # type: ignore
-    """Gets min in a sequence.
-
-    Return smallest item in seq for which item > val applies.
-    None is returned if seq was empty or all items in seq were >= val.
-    """
     min_val = np.inf
     idx = len(seq) - 1
     while idx >= 0:
@@ -295,20 +260,12 @@ def norm_obs_clip(  # type: ignore
     fixed_radius: int = 0,
     normalize_to_range: bool = False,
 ) -> np.ndarray:
-    """Normalize observation.
-
-    This function returns the difference between min and max value of an observation
-    :param obs: Observation that should be normalized
-    :param clip_min: min value where observation will be clipped
-    :param clip_max: max value where observation will be clipped
-    :return: returns normalized and clipped observation
-    """
     if fixed_radius > 0:
         max_obs = fixed_radius
     else:
         max_obs = max(1, max_lt(obs, 1000)) + 1
 
-    min_obs = 0  # min(max_obs, min_gt(obs, 0))
+    min_obs = 0
     if normalize_to_range:
         min_obs = min_gt(obs, 0)
     if min_obs > max_obs:
@@ -322,7 +279,6 @@ def norm_obs_clip(  # type: ignore
 def _split_node_into_feature_groups(  # type: ignore
     node: Node,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Splits node into features."""
     data = np.zeros(6)
     distance = np.zeros(1)
     agent_data = np.zeros(4)
@@ -347,11 +303,8 @@ def _split_node_into_feature_groups(  # type: ignore
 def _split_subtree_into_feature_groups(  # type: ignore
     node: Node, current_tree_depth: int, max_tree_depth: int
 ) -> Tuple:
-    """Split subtree."""
     if node == -np.inf:
         remaining_depth = max_tree_depth - current_tree_depth
-        # reference:
-        # https://stackoverflow.com/questions/515214/total-number-of-nodes-in-a-tree-data-structure
         num_remaining_nodes = int((4 ** (remaining_depth + 1) - 1) / (4 - 1))
         return (
             [-np.inf] * num_remaining_nodes * 6,
@@ -378,7 +331,6 @@ def _split_subtree_into_feature_groups(  # type: ignore
 def split_tree_into_feature_groups(  # type: ignore
     tree: Node, max_tree_depth: int
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """This function splits the tree into three difference arrays."""
     data, distance, agent_data = _split_node_into_feature_groups(tree)
 
     for direction in TreeObsForRailEnv.tree_explored_actions_char:
@@ -395,7 +347,6 @@ def split_tree_into_feature_groups(  # type: ignore
 def normalize_observation(  # type: ignore
     observation: Node, tree_depth: int, observation_radius: int = 0
 ) -> np.ndarray:
-    """This function normalizes the observation used by the RL algorithm."""
     if observation is None:
         return np.zeros(  # type: ignore
             11 * sum(np.power(4, i) for i in range(tree_depth + 1)),

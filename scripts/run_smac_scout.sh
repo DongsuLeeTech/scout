@@ -29,4 +29,3 @@ for scenario in $scenarios; do
     done
   done
 done
-

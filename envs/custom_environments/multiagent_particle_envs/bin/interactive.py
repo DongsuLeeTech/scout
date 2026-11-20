@@ -12,7 +12,6 @@ import multiagent.scenarios as scenarios
 import numpy as np
 
 if __name__ == "__main__":
-    # parse arguments
     parser = argparse.ArgumentParser(description=None)
     parser.add_argument(
         "-s", "--scenario", default="simple.py", help="Path of the scenario Python script."
@@ -20,14 +19,11 @@ if __name__ == "__main__":
     parser.add_argument("--num_agents", default=3, type=int)
     args = parser.parse_args()
 
-    # load scenario from script
     scenario = scenarios.load(args.scenario).Scenario()
-    # create world
     if args.scenario == "simple_spread.py":
         world = scenario.make_world(num_agents=args.num_agents)
     else:
         world = scenario.make_world()
-    # create multiagent environment
     env = MultiAgentEnv(
         world,
         scenario.reset_world,

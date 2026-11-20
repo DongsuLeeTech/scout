@@ -18,9 +18,8 @@ def get_structure_descriptors(
 
     head = jax.tree_map(lambda x: x[0, :n_head, ...], experience)
 
-    # allow for "terminals" and "truncations" to be combined into one "done"
     if len(done_flags)==1:
-        terminal_flag = experience[done_flags[0]][0, :, ...].all(axis=-1) # .all is for all agents
+        terminal_flag = experience[done_flags[0]][0, :, ...].all(axis=-1)
     elif len(done_flags)==2:
         done_1 = experience[done_flags[0]][0, :, ...].all(axis=-1)
         done_2 = experience[done_flags[1]][0, :, ...].all(axis=-1)
@@ -42,11 +41,9 @@ def describe_structure(
     n_head: int = 0,
     done_flags: tuple = ("terminals",),
 ) -> Dict[str, Array]:
-    # get all uids if not specified
     if vault_uids is None:
         vault_uids = get_available_uids(f"./{rel_dir}/{vault_name}")
 
-    # get structure, number of transitions and the head of the block
     heads = {}
     structs = {}
     single_values = []
@@ -86,8 +83,8 @@ def get_episode_return_descriptors(
 def plot_eps_returns_violin(
     all_uid_returns: Dict[str, Array], vault_name: str, save_path: str = ""
 ) -> None:
-    sns.set_theme(style="whitegrid")  # Set seaborn theme with a light blue background
-    plt.figure(figsize=(8, 6))  # Adjust figsize as needed
+    sns.set_theme(style="whitegrid")
+    plt.figure(figsize=(8, 6))
 
     sns.violinplot(data=list(all_uid_returns.values()), inner="point")
     plt.xlabel("Dataset Quality")
@@ -110,7 +107,7 @@ def plot_eps_returns_hist(
 ) -> None:
     vault_uids = list(all_uid_returns.keys())
 
-    sns.set_theme(style="whitegrid")  # Set seaborn theme with a light blue background
+    sns.set_theme(style="whitegrid")
     fig, ax = plt.subplots(
         1,
         len(vault_uids),
@@ -151,15 +148,6 @@ def describe_episode_returns(
     n_bins: Optional[int] = 50,
     done_flags: tuple = ("terminals",),
 ) -> None:
-    """Describe a vault.
-
-    From the specified directory and for the specified uids,
-    describes vaults according to their episode returns.
-    The descriptors include a table of episode return mean, standard deviation, min and max.
-    Additionally, the distributions of episode returns are visualised in histograms
-    and violin plots. n_bins is how many bins the histogram should have.
-    """
-    # get all uids if not specified
     if vault_uids is None:
         vault_uids = get_available_uids(f"./{rel_dir}/{vault_name}")
 
@@ -210,27 +198,11 @@ def describe_episode_returns(
 def calculate_returns(
     experience: Dict[str, Array], reward_key: str = "rewards", done_flags: tuple = ("terminals",),
 ) -> Array:
-    """Calculate the returns in a dataset of experience.
-
-    Args:
-        experience (Dict[str, Array]): experience coming from an OG-MARL vault.
-        reward_key (str, optional):
-            Dictionary key of the rewards in the experience data.
-            Defaults to "rewards".
-        terminal_key (str, optional):
-            Dictionary key of the terminals in the experience data.
-            Defaults to "terminals".
-
-    Returns:
-        Array: jnp array of returns for each episode.
-    """
-    # Experience is of dimension of (1, T, N, *E)
-    # We want all the time data, but just from one agent
     experience_one_agent = jax.tree_map(lambda x: x[0, :, 0, ...], experience)
     rewards = experience_one_agent[reward_key]
     
     if len(done_flags)==1:
-        terminals = jnp.array(experience[done_flags[0]][0].all(axis=-1).squeeze(), dtype=jnp.float32) # .all is for all agents
+        terminals = jnp.array(experience[done_flags[0]][0].all(axis=-1).squeeze(), dtype=jnp.float32)
     elif len(done_flags)==2:
         done_1 = jnp.array(experience[done_flags[0]][0].all(axis=-1).squeeze(), dtype=jnp.float32)
         done_2 = jnp.array(experience[done_flags[1]][0].all(axis=-1).squeeze(), dtype=jnp.float32)
@@ -242,8 +214,8 @@ def calculate_returns(
             new_carry = carry + reward
             new_carry = jax.lax.cond(
                 terminal.all(),
-                lambda _: reward,  # Reset the cumulative sum if terminal
-                lambda _: new_carry,  # Continue accumulating otherwise
+                lambda _: reward,
+                lambda _: new_carry,
                 operand=None,
             )
             return new_carry, new_carry
@@ -252,8 +224,6 @@ def calculate_returns(
             scan_fn,
             jnp.zeros_like(terminals[0]),
             (
-                # We shift the terminals one timestep rightwards,
-                # for our cumulative sum approach to work
                 jnp.pad(terminals, ((1, 0)))[:-1],
                 rewards,
             ),
@@ -265,16 +235,6 @@ def calculate_returns(
 
 
 def get_saco(experience: Dict[str, Array]) -> Tuple[float, Array, Array]:
-    """Calculate the joint SACo in a dataset of experience.
-
-    Args:
-        experience (Dict[str, Array]): experience coming from an OG-MARL vault.
-
-    Returns:
-        float: The joint SACo value for that dataset.
-        Array: numpy array containing the counts of unique pairs.
-        Array: numpy array containing the counts of counts of unique pairs.
-    """
     states = experience["infos"]["state"]
 
     num_tot = states.shape[1]
@@ -293,24 +253,9 @@ def get_saco(experience: Dict[str, Array]) -> Tuple[float, Array, Array]:
 def plot_count_frequencies(
     all_count_vals: Dict[str, Array], all_count_freq: Dict[str, Array], save_path: str = ""
 ) -> None:
-    """Plots the frequencies of counts of state-action pairs.
-
-    Args:
-        all_count_vals (Dict[str, Array]): for each uid (key), the counts of state-action pairs
-        all_count_freq (Dict[str, Array]):
-            for each uid (key), the number of times
-            a state-action pair appears a specific number of times
-        save_path (string): path to save the plot to. If empty, the figure is unsaved.
-
-    Artefacts:
-        plt shows a log-log plot of state-action pair count frequencies per dataset
-        if save_plot is True, plt saves the figure as a pdf at location save_path
-
-    """
     vault_uids = list(all_count_vals.keys())
     colors = sns.color_palette()
 
-    # plot the power law showing count frequencies
     for i, uid in enumerate(vault_uids):
         plt.scatter(
             np.log(all_count_vals[uid].astype(float)),
@@ -337,27 +282,6 @@ def describe_coverage(
     plot_count_freq: bool = True,
     save_plot: bool = False,
 ) -> None:
-    """Provides coverage, structural and episode return descriptors of a Vault of datasets.
-
-    Args:
-        vault_name (string): the name of the Vault,
-            not containing the .vlt suffix
-        vault_uids (List[str]): a list of uids of datasets in the Vault,
-            use if we only describe a subset of all datasets in the Vault
-        rel_dir (string): relative  directory of the Vault
-        plot_count_freq (bool):
-            True when the user wants to generate a plot of state-action count frequencies
-        save_plot (bool): True when the user wants to save the generated plot
-
-    Artefacts:
-        A table is printed containing for each dataset in the list of uids:
-        - Joint SACo
-        if plot_count_freq is True,
-            plt shows a log-log plot of state-action pair count frequencies per dataset
-        if save_plot is True, plt saves the figure as a pdf under the vault_name directory
-
-    """
-    # get all uids if not specified
     if vault_uids is None:
         vault_uids = get_available_uids(f"./{rel_dir}/{vault_name}")
 
@@ -398,35 +322,6 @@ def descriptive_summary(
     n_bins: int = 40,
     done_flags: tuple = ("terminals",),
 ) -> Dict[str, Array]:
-    """Provides coverage, structural and episode return descriptors of a Vault of datasets.
-
-    Args:
-        vault_name (string): the name of the Vault, not containing the .vlt suffix
-        vault_uids (List[str]): a list of uids of datasets in the Vault,
-            use if we only describe a subset of all datasets in the Vault
-        rel_dir (string): relative  directory of the Vault
-        plot_hist (bool): True when the user wants to generate a histogram
-        save_hist (bool): True when the user wants to save a generated histogram
-        n_bins (integer): number of bins to use when generating a histogram
-
-    Returns:
-        all_returns (Dict[str, Array]): for each uid (key),
-            an Array of all episode returns in that dataset
-
-    Artefacts:
-        A table is printed containing for each dataset in the list of uids:
-        - Episode return:
-        -- mean
-        -- standard deviation
-        -- min
-        -- max
-        - Num of trajectories
-        - Num of transitions
-        - Joint SACo
-        if plot_hist is True, plt shows a histogram per dataset in the list of uids
-        if save_hist is True, plt saves the figure as a pdf under the vault_name directory
-
-    """
     if vault_uids is None:
         vault_uids = get_available_uids(f"./{rel_dir}/{vault_name}")
 

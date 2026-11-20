@@ -8,7 +8,6 @@ from envs.wrapped_environments.wrappers import Dtype, PadObsandActs
 
 
 def get_env_config(scenario: str) -> Dict[str, Any]:
-    """Helper method to get env_args."""
     env_args: Dict[str, Any] = {
         "agent_obsk": 1,
     }
@@ -58,8 +57,6 @@ class WrappedGymnasiumMAMuJoCo(BaseEnvironment):
 
 class GymnasiumMAMuJoCo(BaseEnvironment):
 
-    """Environment wrapper Multi-Agent MuJoCo."""
-
     def __init__(self, scenario: str, seed=None):
         env_config = get_env_config(scenario)
         self.environment = gymnasium_robotics.mamujoco_v1.parallel_env(**env_config)
@@ -81,7 +78,6 @@ class GymnasiumMAMuJoCo(BaseEnvironment):
         return observations, rewards, terminals, trunctations, info
 
     def __getattr__(self, name: str) -> Any:
-        """Expose any other attributes of the underlying environment."""
         if hasattr(self.__class__, name):
             return self.__getattribute__(name)
         else:

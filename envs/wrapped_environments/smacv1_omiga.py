@@ -27,8 +27,6 @@ class OmigaConf:
 
 class SMACv1OMIGA(BaseEnvironment):
 
-    """Environment wrapper for the version SMACv1 used in the OMIGA paper."""
-
     def __init__(
         self,
         map_name: str,
@@ -44,48 +42,50 @@ class SMACv1OMIGA(BaseEnvironment):
         self.num_actions = self._environment.n_actions
 
     def reset(self) -> ResetReturn:
-        """Resets the env."""
-        # Reset the environment
         self._environment.reset()
         self.done = False
 
-        # Get observation from env
         observations = self._environment.get_obs()
         observations = {agent: observations[i] for i, agent in enumerate(self.agents)}
 
         legal_actions = self._get_legal_actions()
         legals = {agent: legal_actions[i] for i, agent in enumerate(self.agents)}
 
-        env_state = self._environment.get_state(agent_id=0).astype("float32")
+        env_state = np.concatenate(
+            [self._environment.get_state(agent_id=i) for i in range(len(self.agents))],
+            axis=-1,
+        ).astype("float32")
 
         info = {"legals": legals, "state": env_state}
 
         return observations, info
 
     def step(self, actions: Dict[str, np.ndarray]) -> StepReturn:
-        """Step in env."""
-        # Convert dict of actions to list for SMAC
         smac_actions = []
         for agent in self.agents:
             smac_actions.append(actions[agent])
 
-        o, g, r, d, i, ava = self._environment.step(smac_actions)
+        o, g, r, d, agent_infos, ava = self._environment.step(smac_actions)
 
-        observations = {agent: o[i] for i, agent in enumerate(self.agents)}
+        observations = {agent: o[idx] for idx, agent in enumerate(self.agents)}
         rewards = {
-            agent: np.array(r[i], "float32").squeeze(-1) for i, agent in enumerate(self.agents)
+            agent: np.array(r[idx], "float32").squeeze(-1) for idx, agent in enumerate(self.agents)
         }
-        terminals = {agent: np.array(d[i]) for i, agent in enumerate(self.agents)}
+        terminals = {agent: np.array(d[idx]) for idx, agent in enumerate(self.agents)}
         truncations = {agent: np.array(False) for agent in self.agents}
-        legals = {agent: np.array(ava[i], "int32") for i, agent in enumerate(self.agents)}
-        agent_states = {agent: np.array(g[i], "float32") for i, agent in enumerate(self.agents)}
-        env_state = agent_states["agent_0"]
+        legals = {agent: np.array(ava[idx], "int32") for idx, agent in enumerate(self.agents)}
+        agent_states = {agent: np.array(g[idx], "float32") for idx, agent in enumerate(self.agents)}
+        env_state = np.concatenate([agent_states[agent] for agent in self.agents], axis=-1)
         info = {"legals": legals, "state": env_state}
+
+        if agent_infos and len(agent_infos) > 0:
+            first_info = agent_infos[0]
+            if isinstance(first_info, dict) and first_info.get("won", False):
+                info["battle_won"] = True
 
         return observations, rewards, terminals, truncations, info
 
     def _get_legal_actions(self) -> List[np.ndarray]:
-        """Get legal actions from the environment."""
         legal_actions = []
         for i, _ in enumerate(self.agents):
             legal_actions.append(
